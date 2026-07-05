@@ -1,0 +1,5 @@
+# Shell scripts must always have LF (not CRLF) for Linux/Pi compatibility
+scripts/*.sh text eol=lf
+
+# Everything else: let git handle it
+* text=auto
