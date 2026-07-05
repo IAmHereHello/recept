@@ -8,11 +8,13 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.js',
       registerType: 'autoUpdate',
-      workbox: {
+      injectManifest: {
         globPatterns: [],
-        navigateFallback: null,
-        cleanupOutdatedCaches: true,
+        injectionPoint: undefined,
       },
       manifest: {
         name: 'ReceptApp',
