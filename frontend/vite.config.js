@@ -27,10 +27,10 @@ export default defineConfig({
     port: 3001,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:8001',
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
-      '/uploads': 'http://localhost:8000',
+      '/uploads': 'http://localhost:8001',
     },
   },
   preview: {
@@ -38,10 +38,10 @@ export default defineConfig({
     host: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:8001',
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
-      '/uploads': 'http://localhost:8000',
+      '/uploads': 'http://localhost:8001',
     },
   },
 })

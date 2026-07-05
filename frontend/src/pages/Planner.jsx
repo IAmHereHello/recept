@@ -60,9 +60,7 @@ export function Planner() {
   }
 
   async function applyAllSuggestions() {
-    for (const day of DAYS) {
-      if (suggestions?.[day]) await applySuggestion(day)
-    }
+    await Promise.all(DAYS.filter(day => suggestions?.[day]).map(day => applySuggestion(day)))
   }
 
   async function toggleLock(day) {

@@ -42,8 +42,8 @@ async def import_from_url(body: ImportUrlRequest):
     except Exception as e:
         raise HTTPException(400, f"Could not fetch URL: {e}")
 
-    client = anthropic.Anthropic(api_key=api_key)
-    message = client.messages.create(
+    client = anthropic.AsyncAnthropic(api_key=api_key)
+    message = await client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=2048,
         system=SYSTEM_PROMPT,

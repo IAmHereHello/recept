@@ -1,17 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlite3 import Connection
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import aiofiles
 import uuid
 
+from app.config import UPLOAD_DIR
 from app.database import get_db
 from app.models import CookSessionIn, CookSessionOut, RatingIn
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
-UPLOAD_DIR = Path(__file__).parent.parent.parent / "uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
+ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.heic'}
 
 
 def _fetch_session(conn: Connection, session_id: int) -> dict:
@@ -38,7 +38,7 @@ def list_sessions_for_recipe(recipe_id: int, conn: Connection = Depends(get_db))
 
 @router.post("/", response_model=CookSessionOut, status_code=201)
 def create_session(body: CookSessionIn, conn: Connection = Depends(get_db)):
-    cooked_at = body.cooked_at or datetime.utcnow().isoformat()
+    cooked_at = body.cooked_at or datetime.now(timezone.utc).isoformat()
     cur = conn.execute(
         "INSERT INTO cook_sessions (recipe_id, cooked_at, notes) VALUES (?,?,?)",
         (body.recipe_id, cooked_at, body.notes)
@@ -63,7 +63,9 @@ def rate_session(session_id: int, body: RatingIn, conn: Connection = Depends(get
 @router.post("/{session_id}/photo", response_model=CookSessionOut)
 async def upload_photo(session_id: int, file: UploadFile = File(...), conn: Connection = Depends(get_db)):
     _fetch_session(conn, session_id)
-    suffix = Path(file.filename).suffix.lower() if file.filename else ".jpg"
+    suffix = Path(file.filename).suffix.lower() if file.filename else '.jpg'
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise HTTPException(400, f"Unsupported file type '{suffix}'. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}")
     filename = f"{uuid.uuid4()}{suffix}"
     dest = UPLOAD_DIR / filename
     async with aiofiles.open(dest, "wb") as f:

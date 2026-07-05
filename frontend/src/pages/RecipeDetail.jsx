@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { api } from '../lib/api'
 import { getUser, getOtherUser } from '../lib/user'
@@ -27,12 +27,12 @@ export function RecipeDetail() {
   const me = getUser()
   const other = getOtherUser()
 
-  const load = () => Promise.all([
+  const load = useCallback(() => Promise.all([
     api.getRecipe(id).then(setRecipe),
     api.getSessions(id).then(setSessions),
-  ]).finally(() => setLoading(false))
+  ]).finally(() => setLoading(false)), [id])
 
-  useEffect(() => { load() }, [id])
+  useEffect(() => { load() }, [load])
 
   async function startCookSession() {
     const session = await api.createSession({ recipe_id: Number(id) })
