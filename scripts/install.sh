@@ -85,6 +85,7 @@ WantedBy=default.target
 EOF
 
 info "Writing systemd service: receptapp-frontend"
+NODE_BIN_DIR="$(dirname "$(command -v node)")"
 cat > "$SERVICE_DIR/receptapp-frontend.service" <<EOF
 [Unit]
 Description=ReceptApp Frontend
@@ -92,6 +93,7 @@ After=receptapp-backend.service
 
 [Service]
 WorkingDirectory=$FRONTEND_DIR
+Environment=PATH=$NODE_BIN_DIR:/usr/local/bin:/usr/bin:/bin
 ExecStart=$(command -v npm) run preview
 Restart=on-failure
 RestartSec=5
