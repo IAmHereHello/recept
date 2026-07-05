@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../lib/api'
-import { Plus, Trash2, Loader2, Link as LinkIcon, X } from 'lucide-react'
+import { Loader2, Link as LinkIcon, X, ChevronRight, ChevronLeft } from 'lucide-react'
 
 const EMPTY = {
   name: '', description: '', cook_time: '', difficulty: '',
@@ -20,10 +20,24 @@ export function RecipeForm() {
   const [importing, setImporting] = useState(false)
   const [error, setError] = useState('')
 
+  // Ingredient two-phase state
+  const [ingredientPhase, setIngredientPhase] = useState('names') // 'names' | 'amounts'
+  const [ingredientNamesText, setIngredientNamesText] = useState('')
+
+  // Steps as raw text (blank line = step separator)
+  const [stepsText, setStepsText] = useState('')
+
   useEffect(() => {
     if (isEdit) {
       api.getRecipe(id).then(r => {
         setForm({ ...r, cook_time: r.cook_time ?? '' })
+        setIngredientPhase('amounts')
+        setStepsText(
+          (r.steps || [])
+            .sort((a, b) => a.sort_order - b.sort_order)
+            .map(s => s.description)
+            .join('\n\n')
+        )
         setLoading(false)
       })
     }
@@ -33,11 +47,26 @@ export function RecipeForm() {
     setForm(f => ({ ...f, [key]: val }))
   }
 
-  function addIngredient() {
+  function confirmIngredientNames() {
+    const lines = ingredientNamesText.split('\n').map(l => l.trim()).filter(Boolean)
+    // Preserve existing amounts when name matches
+    const existing = form.ingredients.reduce((map, ing) => {
+      map[ing.name.toLowerCase()] = ing
+      return map
+    }, {})
     setForm(f => ({
       ...f,
-      ingredients: [...f.ingredients, { name: '', amount: '', unit: '', sort_order: f.ingredients.length }],
+      ingredients: lines.map((name, i) => {
+        const match = existing[name.toLowerCase()]
+        return { name, amount: match?.amount ?? '', unit: match?.unit ?? '', sort_order: i }
+      }),
     }))
+    setIngredientPhase('amounts')
+  }
+
+  function backToIngredientNames() {
+    setIngredientNamesText(form.ingredients.map(i => i.name).join('\n'))
+    setIngredientPhase('names')
   }
 
   function updateIngredient(i, key, val) {
@@ -50,28 +79,6 @@ export function RecipeForm() {
 
   function removeIngredient(i) {
     setForm(f => ({ ...f, ingredients: f.ingredients.filter((_, j) => j !== i) }))
-  }
-
-  function addStep() {
-    setForm(f => ({
-      ...f,
-      steps: [...f.steps, { sort_order: f.steps.length + 1, description: '' }],
-    }))
-  }
-
-  function updateStep(i, val) {
-    setForm(f => {
-      const next = [...f.steps]
-      next[i] = { ...next[i], description: val }
-      return { ...f, steps: next }
-    })
-  }
-
-  function removeStep(i) {
-    setForm(f => ({
-      ...f,
-      steps: f.steps.filter((_, j) => j !== i).map((s, j) => ({ ...s, sort_order: j + 1 })),
-    }))
   }
 
   async function doImport() {
@@ -87,6 +94,8 @@ export function RecipeForm() {
         ingredients: (data.ingredients || []).map((ing, i) => ({ ...ing, sort_order: i })),
         steps: (data.steps || []).map((s, i) => ({ ...s, sort_order: i + 1 })),
       }))
+      setIngredientPhase('amounts')
+      setStepsText((data.steps || []).map(s => s.description).join('\n\n'))
       setImportUrl('')
     } catch (e) {
       setError(e.message)
@@ -100,12 +109,18 @@ export function RecipeForm() {
     setSaving(true)
     setError('')
     try {
+      const parsedSteps = stepsText
+        .split(/\n\n+/)
+        .map(s => s.trim())
+        .filter(Boolean)
+        .map((description, i) => ({ sort_order: i + 1, description }))
+
       const payload = {
         ...form,
         cook_time: form.cook_time ? Number(form.cook_time) : null,
         difficulty: form.difficulty || null,
         ingredients: form.ingredients.filter(i => i.name.trim()),
-        steps: form.steps.filter(s => s.description.trim()),
+        steps: parsedSteps,
       }
       if (isEdit) {
         await api.updateRecipe(id, payload)
@@ -121,6 +136,8 @@ export function RecipeForm() {
   }
 
   if (loading) return <div className="p-6 text-center text-gray-400">Laden...</div>
+
+  const stepCount = stepsText.split(/\n\n+/).map(s => s.trim()).filter(Boolean).length
 
   return (
     <form onSubmit={submit} className="p-4 pb-28 max-w-lg mx-auto">
@@ -206,59 +223,87 @@ export function RecipeForm() {
         </div>
       </section>
 
+      {/* Ingredients */}
       <section className="mb-6">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-base font-semibold text-gray-900">Ingrediënten</h2>
-          <button type="button" onClick={addIngredient}
-            className="flex items-center gap-1 text-sm text-green-600 hover:text-green-700 font-medium">
-            <Plus size={14} /> Toevoegen
-          </button>
+          {ingredientPhase === 'amounts' && (
+            <button type="button" onClick={backToIngredientNames}
+              className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 transition">
+              <ChevronLeft size={13} /> Namen bewerken
+            </button>
+          )}
         </div>
-        <div className="space-y-2">
-          {form.ingredients.map((ing, i) => (
-            <div key={i} className="flex gap-2">
-              <input value={ing.amount} onChange={e => updateIngredient(i, 'amount', e.target.value)}
-                placeholder="Hoeveelheid"
-                className="w-20 border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
-              <input value={ing.unit} onChange={e => updateIngredient(i, 'unit', e.target.value)}
-                placeholder="Eenheid"
-                className="w-16 border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
-              <input value={ing.name} onChange={e => updateIngredient(i, 'name', e.target.value)}
-                placeholder="Ingredient"
-                className="flex-1 border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
-              <button type="button" onClick={() => removeIngredient(i)}
-                className="text-gray-400 hover:text-red-500 transition shrink-0">
-                <X size={16} />
-              </button>
-            </div>
-          ))}
-        </div>
+
+        {ingredientPhase === 'names' ? (
+          <div>
+            <textarea
+              value={ingredientNamesText}
+              onChange={e => setIngredientNamesText(e.target.value)}
+              placeholder={'Bloem\nSuiker\nEieren\n...'}
+              rows={6}
+              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
+            />
+            <p className="text-xs text-gray-400 mt-1 mb-2">Één ingrediënt per regel</p>
+            <button
+              type="button"
+              onClick={confirmIngredientNames}
+              disabled={!ingredientNamesText.trim()}
+              className="flex items-center gap-1 text-sm text-green-600 hover:text-green-700 font-medium disabled:opacity-40 transition"
+            >
+              Hoeveelheden invullen <ChevronRight size={14} />
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {form.ingredients.length === 0 && (
+              <p className="text-sm text-gray-400 italic">Geen ingrediënten. Ga terug om namen in te voeren.</p>
+            )}
+            {form.ingredients.map((ing, i) => (
+              <div key={i} className="flex gap-2 items-center">
+                <input
+                  value={ing.amount}
+                  onChange={e => updateIngredient(i, 'amount', e.target.value)}
+                  placeholder="Hoev."
+                  className="w-20 border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                />
+                <input
+                  value={ing.unit}
+                  onChange={e => updateIngredient(i, 'unit', e.target.value)}
+                  placeholder="Eenh."
+                  className="w-16 border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                />
+                <input
+                  value={ing.name}
+                  onChange={e => updateIngredient(i, 'name', e.target.value)}
+                  className="flex-1 border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                />
+                <button type="button" onClick={() => removeIngredient(i)}
+                  className="text-gray-400 hover:text-red-500 transition shrink-0">
+                  <X size={16} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
+      {/* Steps */}
       <section className="mb-8">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-base font-semibold text-gray-900">Bereiding</h2>
-          <button type="button" onClick={addStep}
-            className="flex items-center gap-1 text-sm text-green-600 hover:text-green-700 font-medium">
-            <Plus size={14} /> Stap
-          </button>
+          {stepCount > 0 && (
+            <span className="text-xs text-gray-400">{stepCount} stap{stepCount !== 1 ? 'pen' : ''}</span>
+          )}
         </div>
-        <div className="space-y-3">
-          {form.steps.map((step, i) => (
-            <div key={i} className="flex gap-3">
-              <span className="shrink-0 w-6 h-6 rounded-full bg-green-100 text-green-700 text-xs font-bold flex items-center justify-center mt-2">
-                {i + 1}
-              </span>
-              <textarea rows={2} value={step.description} onChange={e => updateStep(i, e.target.value)}
-                placeholder={`Stap ${i + 1}...`}
-                className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-none" />
-              <button type="button" onClick={() => removeStep(i)}
-                className="text-gray-400 hover:text-red-500 transition shrink-0 mt-2">
-                <X size={16} />
-              </button>
-            </div>
-          ))}
-        </div>
+        <textarea
+          value={stepsText}
+          onChange={e => setStepsText(e.target.value)}
+          placeholder={'Verwarm de oven op 180°C.\n\nMeng de bloem met de suiker.\n\nBak 25 minuten goudbruin.'}
+          rows={10}
+          className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
+        />
+        <p className="text-xs text-gray-400 mt-1">Lege regel tussen stappen = nieuwe stap</p>
       </section>
 
       <div className="fixed bottom-16 left-0 right-0 bg-white border-t border-gray-100 px-4 py-3 max-w-lg mx-auto">
