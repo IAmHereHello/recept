@@ -10,15 +10,9 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       workbox: {
-        cleanupOutdatedCaches: true,
+        globPatterns: [],
         navigateFallback: null,
-        runtimeCaching: [
-          {
-            urlPattern: ({ request }) => request.mode === 'navigate',
-            handler: 'NetworkFirst',
-            options: { cacheName: 'pages', networkTimeoutSeconds: 3 },
-          },
-        ],
+        cleanupOutdatedCaches: true,
       },
       manifest: {
         name: 'ReceptApp',
