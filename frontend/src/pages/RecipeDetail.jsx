@@ -35,7 +35,7 @@ export function RecipeDetail() {
   useEffect(() => { load() }, [load])
 
   async function startCookSession() {
-    const session = await api.createSession({ recipe_id: Number(id) })
+    const session = await api.createSession({ recipe_id: Number(id), cooked_by: me })
     setSessions(s => [session, ...s])
     setRatingSession(session)
     setMyStars(0)

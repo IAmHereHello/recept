@@ -60,6 +60,7 @@ class CookSessionIn(BaseModel):
     recipe_id: int
     cooked_at: Optional[str] = None
     notes: Optional[str] = None
+    cooked_by: Optional[User] = None
 
 
 class CookSessionOut(BaseModel):
@@ -67,8 +68,16 @@ class CookSessionOut(BaseModel):
     recipe_id: int
     cooked_at: str
     notes: Optional[str]
+    cooked_by: Optional[User] = None
     ratings: List[dict] = []
     photos: List[str] = []
+
+
+class PendingReviewOut(BaseModel):
+    id: int
+    recipe_id: int
+    recipe_name: str
+    cooked_at: str
 
 
 class RatingIn(BaseModel):

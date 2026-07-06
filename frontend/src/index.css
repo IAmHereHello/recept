@@ -4,6 +4,14 @@
   box-sizing: border-box;
 }
 
+html, body {
+  /* Prevent any accidentally-overflowing element from widening the layout
+     viewport — on Android Chrome this makes the whole page appear "not
+     zoomed out", shifting fixed/centered elements off screen. */
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
 body {
   margin: 0;
   font-family: system-ui, -apple-system, sans-serif;
@@ -13,7 +21,13 @@ body {
 }
 
 #root {
+  min-height: 100vh;
   min-height: 100svh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
+}
+
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
 }
