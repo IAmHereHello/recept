@@ -32,6 +32,7 @@ export const api = {
   getSessions: (recipeId) => req('GET', `/sessions/recipe/${recipeId}`),
   createSession: (data) => req('POST', '/sessions/', data),
   rateSession: (sessionId, data) => req('POST', `/sessions/${sessionId}/rate`, data),
+  getPendingReviews: (user) => req('GET', `/sessions/pending/${user}`),
   uploadPhoto: (sessionId, file) => {
     const fd = new FormData()
     fd.append('file', file)

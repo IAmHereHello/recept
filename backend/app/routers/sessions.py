@@ -7,7 +7,7 @@ import uuid
 
 from app.config import UPLOAD_DIR
 from app.database import get_db
-from app.models import CookSessionIn, CookSessionOut, RatingIn
+from app.models import CookSessionIn, CookSessionOut, RatingIn, PendingReviewOut, User
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -40,11 +40,27 @@ def list_sessions_for_recipe(recipe_id: int, conn: Connection = Depends(get_db))
 def create_session(body: CookSessionIn, conn: Connection = Depends(get_db)):
     cooked_at = body.cooked_at or datetime.now(timezone.utc).isoformat()
     cur = conn.execute(
-        "INSERT INTO cook_sessions (recipe_id, cooked_at, notes) VALUES (?,?,?)",
-        (body.recipe_id, cooked_at, body.notes)
+        "INSERT INTO cook_sessions (recipe_id, cooked_at, notes, cooked_by) VALUES (?,?,?,?)",
+        (body.recipe_id, cooked_at, body.notes, body.cooked_by)
     )
     conn.commit()
     return _fetch_session(conn, cur.lastrowid)
+
+
+@router.get("/pending/{user}", response_model=list[PendingReviewOut])
+def pending_reviews(user: User, conn: Connection = Depends(get_db)):
+    rows = conn.execute(
+        """SELECT cs.id, cs.recipe_id, cs.cooked_at, r.name AS recipe_name
+           FROM cook_sessions cs
+           JOIN recipes r ON r.id = cs.recipe_id
+           WHERE cs.cooked_by IS NOT NULL AND cs.cooked_by != ?
+             AND NOT EXISTS (
+               SELECT 1 FROM ratings rt WHERE rt.cook_session_id = cs.id AND rt.user = ?
+             )
+           ORDER BY cs.cooked_at ASC""",
+        (user.value, user.value)
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 @router.post("/{session_id}/rate", response_model=CookSessionOut)

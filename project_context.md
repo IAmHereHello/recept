@@ -83,7 +83,7 @@ recipes          — id, name, description, cook_time, difficulty, cuisine_type,
                    is_vegetarian, is_vegan, created_at
 ingredients      — id, recipe_id, name, amount, unit, sort_order
 steps            — id, recipe_id, sort_order, description
-cook_sessions    — id, recipe_id, cooked_at, notes
+cook_sessions    — id, recipe_id, cooked_at, notes, cooked_by (michael|rachel, nullable)
 photos           — id, cook_session_id, file_path, uploaded_at
 ratings          — id, cook_session_id, user (michael|rachel), stars (1–5), rated_at
                    UNIQUE(cook_session_id, user)
@@ -103,8 +103,9 @@ meal_plan        — id, week_start, day (mon–sun), recipe_id, locked
 | PUT    | /recipes/{id}                 | Update recipe                      |
 | DELETE | /recipes/{id}                 | Delete recipe                      |
 | GET    | /sessions/recipe/{id}         | Sessions for a recipe              |
-| POST   | /sessions/                    | Start a cook session               |
+| POST   | /sessions/                    | Start a cook session (accepts `cooked_by`) |
 | POST   | /sessions/{id}/rate           | Rate a session                     |
+| GET    | /sessions/pending/{user}      | Sessions `user` still owes a review for |
 | POST   | /sessions/{id}/photo          | Upload photo for a session         |
 | GET    | /plan/{week_start}            | Get week plan (ISO date Monday)    |
 | POST   | /plan/suggest/{week_start}    | Generate suggestions               |
@@ -119,7 +120,9 @@ meal_plan        — id, week_start, day (mon–sun), recipe_id, locked
 ## Key design decisions
 
 - **Two fixed users**: Michael and Rachel. Identity stored in `localStorage` per device. Either person can rate on behalf of the other from their own device.
-- **Cook sessions**: Every time a recipe is cooked creates a new session. Ratings and photos attach to sessions, not recipes. Aggregate rating (`avg_rating`) is computed across all sessions.
+- **Cook sessions**: Every time a recipe is cooked creates a new session, tagged with `cooked_by` (who marked it). Ratings and photos attach to sessions, not recipes. Aggregate rating (`avg_rating`) is computed across all sessions.
+- **Review gate**: on app load, `<ReviewGate>` (frontend/src/components/ReviewGate.jsx) checks `GET /sessions/pending/{me}` — sessions someone *else* cooked that `me` hasn't rated yet. If any exist, a non-dismissible full-screen modal blocks all interaction (no skip/close) and queues through them one at a time (oldest first); the app becomes usable again once the queue is empty. A session only counts as "pending" for the other person if `cooked_by` is set and no rating row exists yet for them — so if the cook already rated on the other's behalf via the existing "rate for other" checkbox, the gate won't re-prompt.
+- **SQLite connections**: `get_db()` uses `check_same_thread=False` — required because FastAPI runs sync dependencies/endpoints via anyio's threadpool, which does not guarantee the same worker thread across those calls. Without it, requests intermittently (~50% of the time) raised `sqlite3.ProgrammingError: SQLite objects created in a thread can only be used in that same thread`, which surfaced in the UI as recipe pages randomly showing "Niet gevonden." Keep this flag if the connection-per-request pattern in `database.py` ever changes.
 - **Meal planner scoring**: base score = avg stars (default 3.0 for unrated), +0.5 bonus for never-rated dishes, −1.5 soft cooldown for dishes cooked within the last 14 days.
 - **AI import**: fetches raw HTML (truncated to 40k chars), sends to Haiku with a strict JSON schema prompt. User reviews extracted fields before saving.
 - **Grocery list**: aggregated by recipe from the current week's meal plan; shareable via Web Share API with clipboard fallback.

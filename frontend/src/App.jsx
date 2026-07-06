@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { Nav } from './components/Nav'
+import { ReviewGate } from './components/ReviewGate'
 import { Home } from './pages/Home'
 import { RecipeList } from './pages/RecipeList'
 import { RecipeDetail } from './pages/RecipeDetail'
@@ -20,6 +21,7 @@ export default function App() {
         <Route path="/settings" element={<Settings />} />
       </Routes>
       <Nav />
+      <ReviewGate />
     </BrowserRouter>
   )
 }
