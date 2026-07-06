@@ -23,6 +23,7 @@ export function RecipeDetail() {
   const [rateOther, setRateOther] = useState(false)
   const [saving, setSaving] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [photoError, setPhotoError] = useState('')
   const fileRef = useRef()
   const me = getUser()
   const other = getOtherUser()
@@ -64,11 +65,15 @@ export function RecipeDetail() {
     const file = e.target.files?.[0]
     if (!file || !ratingSession) return
     setUploading(true)
+    setPhotoError('')
     try {
       await api.uploadPhoto(ratingSession.id, file)
       await load()
+    } catch (err) {
+      setPhotoError(err.message || 'Foto uploaden mislukt')
     } finally {
       setUploading(false)
+      e.target.value = ''
     }
   }
 
@@ -198,6 +203,9 @@ export function RecipeDetail() {
                 </div>
               )}
 
+              {photoError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-2 mb-3">{photoError}</div>
+              )}
               <div className="flex gap-2 mt-3">
                 <input ref={fileRef} type="file" accept="image/*" onChange={handlePhoto} className="hidden" />
                 <button type="button" onClick={() => fileRef.current?.click()}

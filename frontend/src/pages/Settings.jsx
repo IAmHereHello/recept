@@ -1,6 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { getUser, setUser } from '../lib/user'
-import { User } from 'lucide-react'
+import { checkForUpdate } from '../lib/serviceWorker'
+import { api } from '../lib/api'
+import { RefreshCw, Loader2 } from 'lucide-react'
 
 const users = [
   { id: 'michael', label: 'Michael', emoji: '👨‍🍳' },
@@ -9,10 +11,23 @@ const users = [
 
 export function Settings() {
   const [current, setCurrent] = useState(getUser())
+  const [updateStatus, setUpdateStatus] = useState(null)
+  const [backendVersion, setBackendVersion] = useState(null)
+
+  useEffect(() => {
+    api.getHealth().then(h => setBackendVersion(h.version)).catch(() => {})
+  }, [])
 
   function pick(id) {
     setUser(id)
     setCurrent(id)
+  }
+
+  async function handleCheckForUpdate() {
+    setUpdateStatus('checking')
+    const ok = await checkForUpdate()
+    setUpdateStatus(ok ? 'checked' : 'unavailable')
+    api.getHealth().then(h => setBackendVersion(h.version)).catch(() => {})
   }
 
   return (
@@ -52,6 +67,30 @@ export function Settings() {
           Selecteer eerst wie je bent om recepten te beoordelen.
         </p>
       )}
+
+      <div className="mt-8 pt-6 border-t border-gray-100">
+        <h2 className="text-sm font-semibold text-gray-900 mb-2">App-versie</h2>
+        <p className="text-sm text-gray-500 mb-1">Frontend: <span className="font-mono">{__APP_VERSION__}</span></p>
+        <p className="text-sm text-gray-500 mb-3">Backend: <span className="font-mono">{backendVersion || '…'}</span></p>
+        <button
+          onClick={handleCheckForUpdate}
+          disabled={updateStatus === 'checking'}
+          className="flex items-center gap-1.5 border border-gray-300 px-3 py-2 rounded-lg text-sm text-gray-600 hover:bg-white transition disabled:opacity-50"
+        >
+          {updateStatus === 'checking'
+            ? <Loader2 size={14} className="animate-spin" />
+            : <RefreshCw size={14} />}
+          Controleer op updates
+        </button>
+        {updateStatus === 'checked' && (
+          <p className="text-xs text-gray-400 mt-2">
+            Gecontroleerd. Als er een nieuwe versie is, herlaadt de app zo automatisch.
+          </p>
+        )}
+        {updateStatus === 'unavailable' && (
+          <p className="text-xs text-gray-400 mt-2">Kon niet controleren (geen service worker actief).</p>
+        )}
+      </div>
     </div>
   )
 }

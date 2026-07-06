@@ -49,4 +49,7 @@ export const api = {
 
   // Import
   importUrl: (url) => req('POST', '/import/', { url }),
+
+  // Health / version — served at /health directly, not under /api
+  getHealth: () => fetch('/health').then(res => res.json()),
 }
