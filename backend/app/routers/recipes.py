@@ -1,5 +1,7 @@
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from sqlite3 import Connection
+from app.config import UPLOAD_DIR
 from app.database import get_db
 from app.models import RecipeIn, RecipeOut
 
@@ -116,5 +118,15 @@ def update_recipe(recipe_id: int, body: RecipeIn, conn: Connection = Depends(get
 @router.delete("/{recipe_id}", status_code=204)
 def delete_recipe(recipe_id: int, conn: Connection = Depends(get_db)):
     _fetch_recipe(conn, recipe_id)
+    photo_rows = conn.execute(
+        """SELECT p.file_path FROM photos p
+           JOIN cook_sessions cs ON p.cook_session_id = cs.id
+           WHERE cs.recipe_id = ?""",
+        (recipe_id,)
+    ).fetchall()
     conn.execute("DELETE FROM recipes WHERE id = ?", (recipe_id,))
     conn.commit()
+    # photos cascade-delete at the DB level, but the actual files on disk don't
+    # get removed automatically — clean those up now that the rows are gone.
+    for row in photo_rows:
+        (UPLOAD_DIR / Path(row["file_path"]).name).unlink(missing_ok=True)
