@@ -1,3 +1,4 @@
+import io
 from tests.conftest import make_recipe
 
 
@@ -77,3 +78,25 @@ def test_delete_recipe_cascades_to_ingredients_and_sessions(client):
 
     resp = client.get(f"/sessions/recipe/{recipe_id}")
     assert resp.json() == []
+
+
+def test_delete_recipe_removes_uploaded_photo_files_from_disk(client, tmp_path, monkeypatch):
+    import app.routers.recipes as recipes_module
+    import app.routers.sessions as sessions_module
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    monkeypatch.setattr(recipes_module, "UPLOAD_DIR", upload_dir)
+    monkeypatch.setattr(sessions_module, "UPLOAD_DIR", upload_dir)
+
+    recipe = make_recipe(client)
+    session = client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael"}).json()
+    client.post(
+        f"/sessions/{session['id']}/photo",
+        files={"file": ("dinner.jpg", io.BytesIO(b"fake-image-bytes"), "image/jpeg")},
+    )
+    uploaded_files = list(upload_dir.iterdir())
+    assert len(uploaded_files) == 1
+
+    resp = client.delete(f"/recipes/{recipe['id']}")
+    assert resp.status_code == 204
+    assert list(upload_dir.iterdir()) == []
