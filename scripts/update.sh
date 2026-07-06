@@ -13,6 +13,16 @@ INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_DIR="$INSTALL_DIR/backend"
 FRONTEND_DIR="$INSTALL_DIR/frontend"
 
+# The desktop shortcut launches this script via `bash -c "..."`, a
+# non-interactive, non-login shell that does not source ~/.bashrc. If
+# node/npm are managed by nvm (added to PATH only in ~/.bashrc), they are
+# invisible here even though they work fine over an interactive SSH session.
+# Source nvm explicitly so npm resolves no matter how this script is invoked.
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+command -v npm >/dev/null || die "npm niet gevonden op PATH (ook niet via nvm in $NVM_DIR). Update afgebroken."
+
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  ReceptApp updater"
