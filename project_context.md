@@ -54,25 +54,31 @@ ReceptApp/
 │           └── import_recipe.py # AI-powered URL → recipe import
 └── frontend/
     ├── vite.config.js
+    ├── vitest.config.js
+    ├── vitest.setup.js
     ├── index.html
     └── src/
         ├── App.jsx              # Router setup
         ├── main.jsx
         ├── lib/
-        │   ├── api.js           # All fetch calls (BASE = '/api')
-        │   └── user.js          # localStorage identity (michael | rachel)
+        │   ├── api.js           # All fetch calls (BASE = '/api'); /health bypasses it (unprefixed)
+        │   ├── user.js          # localStorage identity (michael | rachel)
+        │   └── serviceWorker.js # SW registration + proactive update() checks
         ├── components/
         │   ├── Nav.jsx          # Bottom tab bar
         │   ├── StarRating.jsx   # 1–5 star widget
-        │   └── Badge.jsx        # Coloured pill chip
+        │   ├── Badge.jsx        # Coloured pill chip
+        │   └── ReviewGate.jsx   # Non-dismissible pending-review modal
         └── pages/
             ├── Home.jsx         # Dashboard: recent + top-rated
             ├── RecipeList.jsx   # Filterable recipe list
             ├── RecipeDetail.jsx # Recipe view, cook sessions, ratings
             ├── RecipeForm.jsx   # Create / edit recipe + URL import
             ├── Planner.jsx      # Weekly planner + grocery list modal
-            └── Settings.jsx     # Identity picker (Michael / Rachel)
+            └── Settings.jsx     # Identity picker + app version + update check
 ```
+
+Backend tests live in `backend/tests/` (pytest, `pytest.ini`, `requirements-dev.txt`); frontend tests sit next to the code they cover (`*.test.js` / `*.test.jsx`). See **Testing** below.
 
 ---
 
@@ -113,7 +119,26 @@ meal_plan        — id, week_start, day (mon–sun), recipe_id, locked
 | DELETE | /plan/{week_start}/{day}      | Clear a day                        |
 | POST   | /plan/grocery                 | Aggregate grocery list for week    |
 | POST   | /import/                      | Import recipe from URL via AI      |
-| GET    | /health                       | Health check                       |
+| GET    | /health                       | Health check + running git short-hash (`version`) |
+
+---
+
+## Testing
+
+**Backend** — pytest + FastAPI `TestClient`, each test gets its own isolated temp SQLite file (no shared state, no need to mock the DB):
+```bash
+cd backend
+venv\Scripts\pytest -q      # Windows
+venv/bin/pytest -q          # Linux/Pi
+```
+Covers recipe/session/planner CRUD, the pending-review gate queue logic, meal-plan scoring/cooldown/grocery aggregation, mocked AI-import error paths (no real network/Anthropic calls), and a direct regression test for the `check_same_thread` fix.
+
+**Frontend** — Vitest + Testing Library:
+```bash
+cd frontend
+npm test
+```
+Covers `ReviewGate`'s modal/queue behavior and the `api.js`/`user.js` helpers. Pinned to `vitest@^2.1.9` + `jsdom@^25` — `vitest@4`'s bundled `vite@8`/rolldown dependency failed to install (native binding + Node-version mismatch) on this project's Windows dev machine; re-evaluate before upgrading, especially on the Pi's ARM64 Linux.
 
 ---
 
@@ -126,7 +151,10 @@ meal_plan        — id, week_start, day (mon–sun), recipe_id, locked
 - **Meal planner scoring**: base score = avg stars (default 3.0 for unrated), +0.5 bonus for never-rated dishes, −1.5 soft cooldown for dishes cooked within the last 14 days.
 - **AI import**: fetches raw HTML (truncated to 40k chars), sends to Haiku with a strict JSON schema prompt. User reviews extracted fields before saving.
 - **Grocery list**: aggregated by recipe from the current week's meal plan; shareable via Web Share API with clipboard fallback.
-- **Photo storage**: uploaded to `backend/uploads/`, served as static files at `/uploads/`. Accepted types: jpg, jpeg, png, webp, heic.
+- **Photo storage**: uploaded to `backend/uploads/`, served as static files at `/uploads/`. Accepted types: jpg, jpeg, png, webp, heic. Deleting a recipe cascades the `photos` DB rows automatically, but the actual files on disk do not delete themselves — `recipes.py`'s `delete_recipe` explicitly removes them from `UPLOAD_DIR` after the DB commit so they don't leak indefinitely.
+- **PWA update checks**: the service worker (`frontend/src/sw.js`) does no fetch-interception/precaching (`injectManifest` with empty `globPatterns`) — its only job is to force every open tab to reload once a *new* SW version activates (`skipWaiting` + `clients.claim()` + `clients.navigate()`). Getting the browser to actually notice a new SW is the hard part: the browser's own background check is throttled to roughly once per 24h, which made real deploys lag on phones. `frontend/src/lib/serviceWorker.js` now calls `registration.update()` explicitly on load and whenever the tab returns to the foreground (`visibilitychange`), bypassing that throttle. Settings also exposes a manual "Controleer op updates" button wired to the same `update()` call — register immediately (not deferred to `window.load`), since the button can be tapped before `load` fires on a slow connection, which previously raced `registrationPromise` and always failed.
+- **Version indicator**: both the frontend (git short-hash baked in at build time via `vite.config.js`'s `define: { __APP_VERSION__ }`, computed via `git rev-parse --short HEAD`) and the backend (computed once at import time in `main.py`, exposed via `GET /health`'s `version` field) show the running commit on the Settings page — lets you confirm what's actually deployed without SSHing in.
+- **Deploy script (`scripts/update.sh`)**: the desktop shortcut launches it via a non-interactive, non-login `bash -c "..."`, which never sources `~/.bashrc` — since node/npm on the Pi are nvm-managed (added to PATH only there), `npm` was invisible in that context even though it resolves fine over SSH (same class of issue previously fixed for the frontend systemd service in commit `e07609a`). `update.sh` now sources `~/.nvm/nvm.sh` explicitly and `die`s with a clear message if `npm` still isn't found, rather than failing silently mid-script under `set -e`. The desktop shortcut's `Exec=` line (generated by `install.sh`) also used to join every step with `;`, so it always printed "Klaar!" (Done) even when `update.sh` aborted early — fixed to use `&&`/`||` so failure is actually visible. Note: `scripts/update.sh` must stay tracked as executable (`100755`) in git, since the desktop shortcut invokes it as a direct path rather than via `bash update.sh` — this repo is edited from a non-Unix dev machine that doesn't preserve the bit by default, so if it's ever un-set, every `git pull` on the Pi will conflict with the locally-required `chmod +x` until re-fixed with `git update-index --chmod=+x`.
 
 ---
 
