@@ -89,8 +89,20 @@ def test_photo_upload_rejects_unsupported_extension(client):
     resp = client.post(
         f"/sessions/{session['id']}/photo",
         files={"file": ("malware.exe", io.BytesIO(b"data"), "application/octet-stream")},
+        data={"uploaded_by": "michael"},
     )
     assert resp.status_code == 400
+
+
+def test_photo_upload_requires_uploaded_by(client):
+    recipe = make_recipe(client)
+    session = client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael"}).json()
+
+    resp = client.post(
+        f"/sessions/{session['id']}/photo",
+        files={"file": ("dinner.jpg", io.BytesIO(b"fake-image-bytes"), "image/jpeg")},
+    )
+    assert resp.status_code == 422
 
 
 def test_photo_upload_accepts_supported_extension(client, tmp_path, monkeypatch):
@@ -103,13 +115,130 @@ def test_photo_upload_accepts_supported_extension(client, tmp_path, monkeypatch)
     resp = client.post(
         f"/sessions/{session['id']}/photo",
         files={"file": ("dinner.jpg", io.BytesIO(b"fake-image-bytes"), "image/jpeg")},
+        data={"uploaded_by": "michael"},
     )
     assert resp.status_code == 200
     photos = resp.json()["photos"]
     assert len(photos) == 1
-    assert photos[0].startswith("/uploads/")
+    assert photos[0]["file_path"].startswith("/uploads/")
+    assert photos[0]["uploaded_by"] == "michael"
+
+
+def test_delete_photo_removes_row_and_file(client, tmp_path, monkeypatch):
+    import app.routers.sessions as sessions_module
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    monkeypatch.setattr(sessions_module, "UPLOAD_DIR", upload_dir)
+
+    recipe = make_recipe(client)
+    session = client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael"}).json()
+    upload_resp = client.post(
+        f"/sessions/{session['id']}/photo",
+        files={"file": ("dinner.jpg", io.BytesIO(b"fake-image-bytes"), "image/jpeg")},
+        data={"uploaded_by": "michael"},
+    ).json()
+    photo_id = upload_resp["photos"][0]["id"]
+    assert len(list(upload_dir.iterdir())) == 1
+
+    resp = client.delete(f"/sessions/{session['id']}/photo/{photo_id}")
+    assert resp.status_code == 204
+    assert list(upload_dir.iterdir()) == []
+
+    updated = client.get(f"/sessions/{session['id']}").json()
+    assert updated["photos"] == []
+
+
+def test_delete_photo_not_found_404(client):
+    recipe = make_recipe(client)
+    session = client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael"}).json()
+
+    resp = client.delete(f"/sessions/{session['id']}/photo/999")
+    assert resp.status_code == 404
+
+
+def test_delete_photo_wrong_session_404(client, tmp_path, monkeypatch):
+    import app.routers.sessions as sessions_module
+    monkeypatch.setattr(sessions_module, "UPLOAD_DIR", tmp_path)
+
+    recipe = make_recipe(client)
+    session_a = client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael"}).json()
+    session_b = client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "rachel"}).json()
+    upload_resp = client.post(
+        f"/sessions/{session_a['id']}/photo",
+        files={"file": ("dinner.jpg", io.BytesIO(b"fake-image-bytes"), "image/jpeg")},
+        data={"uploaded_by": "michael"},
+    ).json()
+    photo_id = upload_resp["photos"][0]["id"]
+
+    resp = client.delete(f"/sessions/{session_b['id']}/photo/{photo_id}")
+    assert resp.status_code == 404
 
 
 def test_rate_session_not_found(client):
     resp = client.post("/sessions/999/rate", json={"user": "rachel", "stars": 3})
     assert resp.status_code == 404
+
+
+def test_rate_session_accepts_half_star(client):
+    recipe = make_recipe(client)
+    session = client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael"}).json()
+
+    resp = client.post(f"/sessions/{session['id']}/rate", json={"user": "rachel", "stars": 3.5})
+    assert resp.status_code == 200
+    ratings = resp.json()["ratings"]
+    assert ratings[0]["stars"] == 3.5
+
+    recipe_after = client.get(f"/recipes/{recipe['id']}").json()
+    assert recipe_after["avg_rating"] == 3.5
+
+
+def test_rate_session_rejects_non_half_step_stars(client):
+    recipe = make_recipe(client)
+    session = client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael"}).json()
+
+    resp = client.post(f"/sessions/{session['id']}/rate", json={"user": "rachel", "stars": 3.3})
+    assert resp.status_code == 422
+
+
+def test_recipe_avg_rating_averages_half_star_values(client):
+    recipe = make_recipe(client)
+    s1 = client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael"}).json()
+    s2 = client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael"}).json()
+
+    client.post(f"/sessions/{s1['id']}/rate", json={"user": "rachel", "stars": 3.5})
+    client.post(f"/sessions/{s2['id']}/rate", json={"user": "rachel", "stars": 4})
+
+    recipe_after = client.get(f"/recipes/{recipe['id']}").json()
+    assert recipe_after["avg_rating"] == 3.8
+
+
+def test_delete_rating_removes_it(client):
+    recipe = make_recipe(client)
+    session = client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael"}).json()
+    client.post(f"/sessions/{session['id']}/rate", json={"user": "rachel", "stars": 4})
+
+    resp = client.delete(f"/sessions/{session['id']}/rate/rachel")
+    assert resp.status_code == 204
+
+    updated = client.get(f"/sessions/{session['id']}").json()
+    assert updated["ratings"] == []
+
+
+def test_delete_rating_nonexistent_is_noop(client):
+    recipe = make_recipe(client)
+    session = client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael"}).json()
+
+    resp = client.delete(f"/sessions/{session['id']}/rate/rachel")
+    assert resp.status_code == 204
+
+
+def test_delete_rating_then_recipe_avg_rating_recalculates(client):
+    recipe = make_recipe(client)
+    session = client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael"}).json()
+    client.post(f"/sessions/{session['id']}/rate", json={"user": "michael", "stars": 2})
+    client.post(f"/sessions/{session['id']}/rate", json={"user": "rachel", "stars": 4})
+
+    client.delete(f"/sessions/{session['id']}/rate/rachel")
+
+    recipe_after = client.get(f"/recipes/{recipe['id']}").json()
+    assert recipe_after["avg_rating"] == 2.0

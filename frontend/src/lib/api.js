@@ -32,12 +32,21 @@ export const api = {
   getSessions: (recipeId) => req('GET', `/sessions/recipe/${recipeId}`),
   createSession: (data) => req('POST', '/sessions/', data),
   rateSession: (sessionId, data) => req('POST', `/sessions/${sessionId}/rate`, data),
+  deleteRating: (sessionId, user) => req('DELETE', `/sessions/${sessionId}/rate/${user}`),
   getPendingReviews: (user) => req('GET', `/sessions/pending/${user}`),
-  uploadPhoto: (sessionId, file) => {
+  getSession: (sessionId) => req('GET', `/sessions/${sessionId}`),
+  uploadPhoto: (sessionId, file, uploadedBy) => {
     const fd = new FormData()
     fd.append('file', file)
+    fd.append('uploaded_by', uploadedBy)
     return req('POST', `/sessions/${sessionId}/photo`, fd, true)
   },
+  deletePhoto: (sessionId, photoId) => req('DELETE', `/sessions/${sessionId}/photo/${photoId}`),
+  advanceStep: (sessionId, stepIndex) => req('POST', `/sessions/${sessionId}/step`, { step_index: stepIndex }),
+  startTimer: (sessionId, seconds) => req('POST', `/sessions/${sessionId}/timer`, { seconds }),
+  clearTimer: (sessionId) => req('DELETE', `/sessions/${sessionId}/timer`),
+  finishCooking: (sessionId) => req('POST', `/sessions/${sessionId}/finish`),
+  getActiveSession: () => req('GET', '/sessions/active'),
 
   // Planner
   getWeek: (weekStart) => req('GET', `/plan/${weekStart}`),
@@ -46,6 +55,8 @@ export const api = {
   setDay: (weekStart, day, data) => req('PUT', `/plan/${weekStart}/${day}`, data),
   clearDay: (weekStart, day) => req('DELETE', `/plan/${weekStart}/${day}`),
   getGroceries: (weekStart) => req('POST', '/plan/grocery', { week_start: weekStart }),
+  addSideDish: (weekStart, day, recipeId) => req('POST', `/plan/${weekStart}/${day}/sides`, { recipe_id: recipeId }),
+  removeSideDish: (weekStart, day, recipeId) => req('DELETE', `/plan/${weekStart}/${day}/sides/${recipeId}`),
 
   // Import
   importUrl: (url) => req('POST', '/import/', { url }),

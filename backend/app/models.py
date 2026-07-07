@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 from enum import Enum
 
@@ -44,6 +44,8 @@ class RecipeIn(BaseModel):
     cuisine_type: Optional[str] = None
     is_vegetarian: bool = False
     is_vegan: bool = False
+    is_side_dish: bool = False
+    is_baking: bool = False
     ingredients: List[IngredientIn] = []
     steps: List[StepIn] = []
 
@@ -61,6 +63,13 @@ class CookSessionIn(BaseModel):
     cooked_at: Optional[str] = None
     notes: Optional[str] = None
     cooked_by: Optional[User] = None
+    cooking_mode: bool = False
+
+
+class PhotoOut(BaseModel):
+    id: int
+    file_path: str
+    uploaded_by: Optional[User] = None
 
 
 class CookSessionOut(BaseModel):
@@ -69,8 +78,30 @@ class CookSessionOut(BaseModel):
     cooked_at: str
     notes: Optional[str]
     cooked_by: Optional[User] = None
+    cooking_mode: bool
+    current_step: int
+    finished_at: Optional[str] = None
     ratings: List[dict] = []
-    photos: List[str] = []
+    photos: List[PhotoOut] = []
+
+
+class StepAdvanceIn(BaseModel):
+    step_index: int
+
+
+class TimerStartIn(BaseModel):
+    seconds: int
+
+
+class ActiveSessionOut(BaseModel):
+    session_id: int
+    recipe_id: int
+    recipe_name: str
+    cooked_by: User
+    current_step: int
+    total_steps: int
+    active_timer_remaining_seconds: Optional[int] = None
+    estimated_remaining_seconds: Optional[int] = None
 
 
 class PendingReviewOut(BaseModel):
@@ -82,7 +113,14 @@ class PendingReviewOut(BaseModel):
 
 class RatingIn(BaseModel):
     user: User
-    stars: int = Field(..., ge=1, le=5)
+    stars: float = Field(..., ge=1, le=5)
+
+    @field_validator("stars")
+    @classmethod
+    def stars_must_be_half_step(cls, v: float) -> float:
+        if (v * 2) % 1 != 0:
+            raise ValueError("stars must be in increments of 0.5")
+        return v
 
 
 class MealPlanEntry(BaseModel):
@@ -90,6 +128,10 @@ class MealPlanEntry(BaseModel):
     day: Day
     recipe_id: Optional[int] = None
     locked: bool = False
+
+
+class SideDishIn(BaseModel):
+    recipe_id: int
 
 
 class ImportUrlRequest(BaseModel):

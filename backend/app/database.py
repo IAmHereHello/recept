@@ -83,6 +83,14 @@ def init_db():
             locked INTEGER NOT NULL DEFAULT 0,
             UNIQUE(week_start, day)
         );
+
+        CREATE TABLE IF NOT EXISTS meal_plan_sides (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            week_start TEXT NOT NULL,
+            day TEXT NOT NULL CHECK(day IN ('mon','tue','wed','thu','fri','sat','sun')),
+            recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+            UNIQUE(week_start, day, recipe_id)
+        );
     """)
 
     # Migration: cooked_by was added after the initial cook_sessions table;
@@ -91,6 +99,41 @@ def init_db():
     cols = [row[1] for row in conn.execute("PRAGMA table_info(cook_sessions)").fetchall()]
     if "cooked_by" not in cols:
         conn.execute("ALTER TABLE cook_sessions ADD COLUMN cooked_by TEXT CHECK(cooked_by IN ('michael','rachel'))")
+
+    # Migration: side dish / baking categories, added after the initial recipes table.
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(recipes)").fetchall()]
+    if "is_side_dish" not in cols:
+        conn.execute("ALTER TABLE recipes ADD COLUMN is_side_dish INTEGER NOT NULL DEFAULT 0")
+    if "is_baking" not in cols:
+        conn.execute("ALTER TABLE recipes ADD COLUMN is_baking INTEGER NOT NULL DEFAULT 0")
+
+    # Migration: photo uploader attribution, added after the initial photos table.
+    # Existing photos get NULL (unknown uploader) since there's no way to backfill this.
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(photos)").fetchall()]
+    if "uploaded_by" not in cols:
+        conn.execute("ALTER TABLE photos ADD COLUMN uploaded_by TEXT CHECK(uploaded_by IN ('michael','rachel'))")
+
+    # Migration: cooking mode, added after the initial cook_sessions table.
+    # `cooking_mode` distinguishes sessions started via the new guided flow from
+    # legacy instant ones — this matters because it's what makes the cook (not
+    # just the other person) show up in their own pending-review queue. Existing
+    # rows are backfilled to cooking_mode=0 (via the column DEFAULT) and
+    # finished_at=cooked_at (immediately "done", matching their old behavior),
+    # so upgrading never retroactively surfaces a backlog of self-review prompts.
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(cook_sessions)").fetchall()]
+    if "cooking_mode" not in cols:
+        conn.execute("ALTER TABLE cook_sessions ADD COLUMN cooking_mode INTEGER NOT NULL DEFAULT 0")
+    if "current_step" not in cols:
+        conn.execute("ALTER TABLE cook_sessions ADD COLUMN current_step INTEGER NOT NULL DEFAULT 0")
+    if "step_started_at" not in cols:
+        conn.execute("ALTER TABLE cook_sessions ADD COLUMN step_started_at TEXT")
+    if "timer_seconds" not in cols:
+        conn.execute("ALTER TABLE cook_sessions ADD COLUMN timer_seconds INTEGER")
+    if "timer_started_at" not in cols:
+        conn.execute("ALTER TABLE cook_sessions ADD COLUMN timer_started_at TEXT")
+    if "finished_at" not in cols:
+        conn.execute("ALTER TABLE cook_sessions ADD COLUMN finished_at TEXT")
+        conn.execute("UPDATE cook_sessions SET finished_at = cooked_at WHERE finished_at IS NULL")
 
     conn.commit()
     conn.close()

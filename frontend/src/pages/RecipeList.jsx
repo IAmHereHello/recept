@@ -12,15 +12,16 @@ export function RecipeList() {
   const [recipes, setRecipes] = useState([])
   const [search, setSearch] = useState('')
   const [vegetarian, setVegetarian] = useState(null)
+  const [baking, setBaking] = useState(null)
   const [difficulty, setDifficulty] = useState('')
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     setLoading(true)
-    api.getRecipes({ vegetarian, difficulty: difficulty || undefined })
+    api.getRecipes({ vegetarian, baking, difficulty: difficulty || undefined })
       .then(setRecipes)
       .finally(() => setLoading(false))
-  }, [vegetarian, difficulty])
+  }, [vegetarian, baking, difficulty])
 
   const filtered = recipes.filter(r =>
     r.name.toLowerCase().includes(search.toLowerCase())
@@ -55,6 +56,13 @@ export function RecipeList() {
             ${vegetarian ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200'}`}
         >
           🌱 Vegetarisch
+        </button>
+        <button
+          onClick={() => setBaking(baking === null ? true : null)}
+          className={`px-3 py-1.5 rounded-full text-sm font-medium border transition
+            ${baking ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200'}`}
+        >
+          🍞 Bakken
         </button>
         {DIFFICULTIES.filter(Boolean).map(d => (
           <button
@@ -96,7 +104,7 @@ export function RecipeList() {
                   <div className="text-sm text-gray-500 truncate mt-0.5">{r.description}</div>
                 )}
                 <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                  {r.avg_rating && <StarRating value={Math.round(r.avg_rating)} readonly size={4} />}
+                  {r.avg_rating && <StarRating value={r.avg_rating} readonly size={4} />}
                   {r.is_vegan && <Badge color="emerald">Vegan</Badge>}
                   {!r.is_vegan && r.is_vegetarian && <Badge color="green">Veggie</Badge>}
                   {r.cuisine_type && <Badge>{r.cuisine_type}</Badge>}

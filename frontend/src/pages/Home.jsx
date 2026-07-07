@@ -104,7 +104,7 @@ function RecipeCard({ recipe }) {
       <div className="flex-1 min-w-0">
         <div className="font-medium text-gray-900 truncate">{recipe.name}</div>
         <div className="flex items-center gap-2 mt-1">
-          {recipe.avg_rating && <StarRating value={Math.round(recipe.avg_rating)} readonly size={4} />}
+          {recipe.avg_rating && <StarRating value={recipe.avg_rating} readonly size={4} />}
           <div className="flex gap-1">
             {recipe.is_vegan && <Badge color="emerald">Vegan</Badge>}
             {!recipe.is_vegan && recipe.is_vegetarian && <Badge color="green">Veggie</Badge>}

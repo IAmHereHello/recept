@@ -26,17 +26,24 @@ function addWeeks(d, n) {
   return next
 }
 
+function dayISO(weekDate, day) {
+  const d = new Date(weekDate)
+  d.setDate(d.getDate() + DAYS.indexOf(day))
+  return toISO(d)
+}
+
 export function Planner() {
   const [weekDate, setWeekDate] = useState(() => getMonday(new Date()))
   const weekStart = toISO(weekDate)
   const [plan, setPlan] = useState({})
   const [suggestions, setSuggestions] = useState(null)
   const [recipes, setRecipes] = useState([])
-  const [picker, setPicker] = useState(null)
+  const [picker, setPicker] = useState(null) // { day, mode: 'main' | 'side' }
   const [vegOnly, setVegOnly] = useState(false)
   const [loading, setLoading] = useState(true)
   const [grocery, setGrocery] = useState(null)
   const [search, setSearch] = useState('')
+  const [shareStatus, setShareStatus] = useState('')
 
   useEffect(() => {
     setLoading(true)
@@ -56,7 +63,7 @@ export function Planner() {
     if (!suggestions?.[day]) return
     const entry = { week_start: weekStart, day, recipe_id: suggestions[day].id, locked: false }
     await api.setDay(weekStart, day, entry)
-    setPlan(p => ({ ...p, [day]: { ...entry, recipe: suggestions[day] } }))
+    setPlan(p => ({ ...p, [day]: { ...entry, recipe: suggestions[day], sides: p[day]?.sides || [] } }))
   }
 
   async function applyAllSuggestions() {
@@ -79,13 +86,64 @@ export function Planner() {
   async function pickRecipe(day, recipe) {
     const entry = { week_start: weekStart, day, recipe_id: recipe.id, locked: false }
     await api.setDay(weekStart, day, entry)
-    setPlan(p => ({ ...p, [day]: { ...entry, recipe_name: recipe.name } }))
+    setPlan(p => ({ ...p, [day]: { ...entry, recipe_name: recipe.name, sides: p[day]?.sides || [] } }))
     setPicker(null)
+  }
+
+  async function addSide(day, recipe) {
+    await api.addSideDish(weekStart, day, recipe.id)
+    setPlan(p => ({
+      ...p,
+      [day]: {
+        ...(p[day] || { week_start: weekStart, day, recipe_id: null, locked: false }),
+        sides: [...(p[day]?.sides || []), { recipe_id: recipe.id, recipe_name: recipe.name }],
+      },
+    }))
+    setPicker(null)
+  }
+
+  async function removeSide(day, recipeId) {
+    await api.removeSideDish(weekStart, day, recipeId)
+    setPlan(p => {
+      const daySides = (p[day]?.sides || []).filter(s => s.recipe_id !== recipeId)
+      if (!p[day]?.recipe_id && daySides.length === 0) {
+        return { ...p, [day]: null }
+      }
+      return { ...p, [day]: { ...p[day], sides: daySides } }
+    })
+  }
+
+  function selectPickerRecipe(r) {
+    if (picker.mode === 'side') return addSide(picker.day, r)
+    return pickRecipe(picker.day, r)
   }
 
   async function loadGrocery() {
     const data = await api.getGroceries(weekStart)
     setGrocery(data)
+  }
+
+  async function shareGrocery() {
+    const text = Object.entries(grocery.by_recipe)
+      .map(([name, ings]) => `${name}:\n${ings.map(i => `  - ${i.amount || ''} ${i.unit || ''} ${i.name}`.trim()).join('\n')}`)
+      .join('\n\n')
+    try {
+      if (navigator.share) {
+        await navigator.share({ text })
+        setShareStatus('Gedeeld')
+      } else if (navigator.clipboard) {
+        await navigator.clipboard.writeText(text)
+        setShareStatus('Gekopieerd naar klembord')
+      } else {
+        setShareStatus('Delen niet ondersteund op dit apparaat')
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        setShareStatus('Delen mislukt')
+      }
+    } finally {
+      setTimeout(() => setShareStatus(''), 2500)
+    }
   }
 
   function formatWeek() {
@@ -96,7 +154,8 @@ export function Planner() {
 
   const pickerRecipes = recipes.filter(r =>
     r.name.toLowerCase().includes(search.toLowerCase()) &&
-    (!vegOnly || r.is_vegetarian)
+    (!vegOnly || r.is_vegetarian) &&
+    (picker?.mode === 'side' ? r.is_side_dish : !r.is_side_dish && !r.is_baking)
   )
 
   return (
@@ -156,18 +215,19 @@ export function Planner() {
             const recipeName = recipeId
               ? recipes.find(r => r.id === recipeId)?.name || entry?.recipe_name || '...'
               : null
+            const isPast = dayISO(weekDate, day) < toISO(new Date())
 
             return (
-              <div key={day} className="bg-white border border-gray-100 rounded-xl p-3 shadow-sm">
+              <div key={day} className={`bg-white border border-gray-100 rounded-xl p-3 shadow-sm ${isPast ? 'opacity-50' : ''}`}>
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{DAY_LABELS[day]}</span>
                   <div className="flex gap-1">
-                    {recipeId && (
+                    {recipeId && !isPast && (
                       <button onClick={() => toggleLock(day)} className="p-1 text-gray-400 hover:text-gray-600">
                         {entry?.locked ? <Lock size={12} /> : <Unlock size={12} />}
                       </button>
                     )}
-                    {recipeId && (
+                    {recipeId && !isPast && (
                       <button onClick={() => clearDay(day)} className="p-1 text-gray-400 hover:text-red-500">
                         <X size={12} />
                       </button>
@@ -182,10 +242,12 @@ export function Planner() {
                     </Link>
                     {entry?.locked && <Lock size={12} className="text-green-600" />}
                   </div>
+                ) : isPast ? (
+                  <div className="text-sm text-gray-300 italic">Geen gerecht</div>
                 ) : (
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => { setPicker(day); setSearch('') }}
+                      onClick={() => { setPicker({ day, mode: 'main' }); setSearch('') }}
                       className="text-sm text-gray-400 hover:text-green-600 transition"
                     >
                       + Kies gerecht
@@ -201,8 +263,31 @@ export function Planner() {
                   </div>
                 )}
 
-                {suggestion && recipeName && (
+                {suggestion && recipeName && !isPast && (
                   <div className="text-xs text-gray-400 mt-1">Suggestie: {suggestion.name}</div>
+                )}
+
+                {(entry?.sides?.length > 0 || !isPast) && (
+                  <div className="flex items-center gap-1.5 flex-wrap mt-2">
+                    {entry?.sides?.map(side => (
+                      <span key={side.recipe_id} className="flex items-center gap-1 text-xs text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full">
+                        {side.recipe_name}
+                        {!isPast && (
+                          <button onClick={() => removeSide(day, side.recipe_id)} className="text-gray-400 hover:text-red-500">
+                            <X size={10} />
+                          </button>
+                        )}
+                      </span>
+                    ))}
+                    {!isPast && (
+                      <button
+                        onClick={() => { setPicker({ day, mode: 'side' }); setSearch('') }}
+                        className="text-xs text-gray-400 hover:text-green-600 transition"
+                      >
+                        + Bijgerecht
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             )
@@ -214,7 +299,9 @@ export function Planner() {
         <div className="fixed inset-0 bg-black/40 z-50 flex items-end">
           <div className="bg-white w-full max-w-lg mx-auto rounded-t-2xl p-4 max-h-[70vh] flex flex-col">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="font-semibold text-gray-900">Kies gerecht — {DAY_LABELS[picker]}</h3>
+              <h3 className="font-semibold text-gray-900">
+                {picker.mode === 'side' ? 'Kies bijgerecht' : 'Kies gerecht'} — {DAY_LABELS[picker.day]}
+              </h3>
               <button onClick={() => setPicker(null)}><X size={20} className="text-gray-500" /></button>
             </div>
             <input
@@ -228,7 +315,7 @@ export function Planner() {
               {pickerRecipes.map(r => (
                 <button
                   key={r.id}
-                  onClick={() => pickRecipe(picker, r)}
+                  onClick={() => selectPickerRecipe(r)}
                   className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 text-left"
                 >
                   {r.cover_photo
@@ -255,12 +342,7 @@ export function Planner() {
               <h3 className="font-semibold text-gray-900">Boodschappenlijst</h3>
               <div className="flex gap-2">
                 <button
-                  onClick={() => {
-                    const text = Object.entries(grocery.by_recipe)
-                      .map(([name, ings]) => `${name}:\n${ings.map(i => `  - ${i.amount || ''} ${i.unit || ''} ${i.name}`.trim()).join('\n')}`)
-                      .join('\n\n')
-                    navigator.share?.({ text }) ?? navigator.clipboard?.writeText(text)
-                  }}
+                  onClick={shareGrocery}
                   className="text-sm text-green-600 font-medium"
                 >
                   Deel
@@ -268,6 +350,11 @@ export function Planner() {
                 <button onClick={() => setGrocery(null)}><X size={20} className="text-gray-500" /></button>
               </div>
             </div>
+            {shareStatus && (
+              <div className="bg-green-50 border border-green-200 text-green-700 text-xs rounded-lg p-2 mb-3">
+                {shareStatus}
+              </div>
+            )}
             <div className="overflow-y-auto flex-1">
               {Object.entries(grocery.by_recipe).map(([recipeName, ings]) => (
                 <div key={recipeName} className="mb-4">

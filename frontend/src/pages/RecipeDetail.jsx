@@ -1,15 +1,14 @@
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { api } from '../lib/api'
-import { getUser, getOtherUser } from '../lib/user'
+import { getUser } from '../lib/user'
 import { StarRating } from '../components/StarRating'
 import { Badge } from '../components/Badge'
 import {
-  Clock, ChefHat, Pencil, Trash2, Camera, Plus, Loader2, Star
+  Clock, ChefHat, Pencil, Trash2, Play, X
 } from 'lucide-react'
 
 const DIFF_LABELS = { easy: 'Makkelijk', medium: 'Gemiddeld', hard: 'Moeilijk' }
-const USER_LABELS = { michael: 'Michael', rachel: 'Rachel' }
 
 export function RecipeDetail() {
   const { id } = useParams()
@@ -17,16 +16,9 @@ export function RecipeDetail() {
   const [recipe, setRecipe] = useState(null)
   const [sessions, setSessions] = useState([])
   const [loading, setLoading] = useState(true)
-  const [ratingSession, setRatingSession] = useState(null)
-  const [myStars, setMyStars] = useState(0)
-  const [otherStars, setOtherStars] = useState(0)
-  const [rateOther, setRateOther] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const [photoError, setPhotoError] = useState('')
-  const fileRef = useRef()
+  const [editingRatingKey, setEditingRatingKey] = useState(null) // `${sessionId}:${user}`
+  const [editingStars, setEditingStars] = useState(0)
   const me = getUser()
-  const other = getOtherUser()
 
   const load = useCallback(() => Promise.all([
     api.getRecipe(id).then(setRecipe),
@@ -35,46 +27,36 @@ export function RecipeDetail() {
 
   useEffect(() => { load() }, [load])
 
-  async function startCookSession() {
-    const session = await api.createSession({ recipe_id: Number(id), cooked_by: me })
-    setSessions(s => [session, ...s])
-    setRatingSession(session)
-    setMyStars(0)
-    setOtherStars(0)
-    setRateOther(false)
+  async function startCooking() {
+    const session = await api.createSession({ recipe_id: Number(id), cooked_by: me, cooking_mode: true })
+    navigate(`/recipes/${id}/cook?session=${session.id}`)
   }
 
-  async function submitRatings() {
-    if (!ratingSession) return
-    setSaving(true)
-    try {
-      if (me && myStars > 0) {
-        await api.rateSession(ratingSession.id, { user: me, stars: myStars })
-      }
-      if (rateOther && other && otherStars > 0) {
-        await api.rateSession(ratingSession.id, { user: other, stars: otherStars })
-      }
-      setRatingSession(null)
-      await load()
-    } finally {
-      setSaving(false)
-    }
+  function startEditRating(sessionId, rating) {
+    setEditingRatingKey(`${sessionId}:${rating.user}`)
+    setEditingStars(rating.stars)
   }
 
-  async function handlePhoto(e) {
-    const file = e.target.files?.[0]
-    if (!file || !ratingSession) return
-    setUploading(true)
-    setPhotoError('')
-    try {
-      await api.uploadPhoto(ratingSession.id, file)
-      await load()
-    } catch (err) {
-      setPhotoError(err.message || 'Foto uploaden mislukt')
-    } finally {
-      setUploading(false)
-      e.target.value = ''
-    }
+  function cancelEditRating() {
+    setEditingRatingKey(null)
+  }
+
+  async function saveEditRating(sessionId, user) {
+    await api.rateSession(sessionId, { user, stars: editingStars })
+    setEditingRatingKey(null)
+    await load()
+  }
+
+  async function removeRating(sessionId, user) {
+    if (!confirm('Beoordeling verwijderen?')) return
+    await api.deleteRating(sessionId, user)
+    await load()
+  }
+
+  async function removePhoto(sessionId, photoId) {
+    if (!confirm('Foto verwijderen?')) return
+    await api.deletePhoto(sessionId, photoId)
+    await load()
   }
 
   async function deleteRecipe() {
@@ -128,7 +110,7 @@ export function RecipeDetail() {
 
         {recipe.avg_rating && (
           <div className="flex items-center gap-2 mb-4">
-            <StarRating value={Math.round(recipe.avg_rating)} readonly size={5} />
+            <StarRating value={recipe.avg_rating} readonly size={5} />
             <span className="text-sm text-gray-500">{recipe.avg_rating.toFixed(1)}</span>
           </div>
         )}
@@ -172,72 +154,67 @@ export function RecipeDetail() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-base font-semibold text-gray-900">Kooksessies</h2>
             <button
-              onClick={startCookSession}
-              className="flex items-center gap-1.5 bg-green-600 text-white px-3 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition"
+              onClick={startCooking}
+              disabled={!recipe.steps?.length}
+              className="flex items-center gap-1.5 bg-green-600 text-white px-3 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition"
             >
-              <Plus size={14} /> Gekookt!
+              <Play size={14} /> Start koken
             </button>
           </div>
-
-          {ratingSession && (
-            <div className="bg-green-50 border border-green-200 rounded-xl p-4 mb-4">
-              <p className="text-sm font-semibold text-green-800 mb-3">Beoordeel deze sessie</p>
-
-              {me && (
-                <div className="mb-3">
-                  <p className="text-xs text-gray-600 mb-1">{USER_LABELS[me]}</p>
-                  <StarRating value={myStars} onChange={setMyStars} size={6} />
-                </div>
-              )}
-
-              <label className="flex items-center gap-2 text-sm text-gray-600 mb-3 cursor-pointer">
-                <input type="checkbox" checked={rateOther} onChange={e => setRateOther(e.target.checked)}
-                  className="accent-green-600" />
-                Ook beoordelen voor {other ? USER_LABELS[other] : 'ander persoon'}
-              </label>
-
-              {rateOther && other && (
-                <div className="mb-3">
-                  <p className="text-xs text-gray-600 mb-1">{USER_LABELS[other]}</p>
-                  <StarRating value={otherStars} onChange={setOtherStars} size={6} />
-                </div>
-              )}
-
-              {photoError && (
-                <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-2 mb-3">{photoError}</div>
-              )}
-              <div className="flex gap-2 mt-3">
-                <input ref={fileRef} type="file" accept="image/*" onChange={handlePhoto} className="hidden" />
-                <button type="button" onClick={() => fileRef.current?.click()}
-                  disabled={uploading}
-                  className="flex items-center gap-1.5 border border-gray-300 px-3 py-2 rounded-lg text-sm text-gray-600 hover:bg-white transition disabled:opacity-50">
-                  {uploading ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
-                  Foto
-                </button>
-                <button onClick={submitRatings} disabled={saving}
-                  className="flex-1 bg-green-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-60 transition flex items-center justify-center gap-2">
-                  {saving && <Loader2 size={14} className="animate-spin" />}
-                  Opslaan
-                </button>
-              </div>
-            </div>
-          )}
 
           {sessions.map(s => (
             <div key={s.id} className="border border-gray-100 rounded-xl p-3 mb-3 bg-white">
               <div className="text-xs text-gray-400 mb-2">
                 {new Date(s.cooked_at).toLocaleDateString('nl-NL', { day: 'numeric', month: 'long', year: 'numeric' })}
               </div>
-              {s.ratings.map(r => (
-                <div key={r.id} className="flex items-center gap-2 mb-1">
-                  <span className="text-xs text-gray-500 w-14 capitalize">{r.user}</span>
-                  <StarRating value={r.stars} readonly size={4} />
-                </div>
-              ))}
+              {s.ratings.map(r => {
+                const key = `${s.id}:${r.user}`
+                const isEditing = editingRatingKey === key
+                return (
+                  <div key={r.id} className="flex items-center gap-2 mb-1">
+                    <span className="text-xs text-gray-500 w-14 capitalize">{r.user}</span>
+                    {isEditing ? (
+                      <>
+                        <StarRating value={editingStars} onChange={setEditingStars} size={4} />
+                        <button onClick={() => saveEditRating(s.id, r.user)} className="text-xs text-green-600 font-medium">
+                          Opslaan
+                        </button>
+                        <button onClick={cancelEditRating} className="text-xs text-gray-400 hover:text-gray-600">
+                          Annuleren
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <StarRating value={r.stars} readonly size={4} />
+                        {r.user === me && (
+                          <div className="flex items-center gap-1 ml-auto">
+                            <button onClick={() => startEditRating(s.id, r)} className="text-gray-400 hover:text-gray-600">
+                              <Pencil size={12} />
+                            </button>
+                            <button onClick={() => removeRating(s.id, r.user)} className="text-gray-400 hover:text-red-500">
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )
+              })}
               {s.photos.length > 0 && (
                 <div className="flex gap-2 mt-2 flex-wrap">
-                  {s.photos.map((p, i) => (
-                    <img key={i} src={p} alt="" className="h-16 w-16 rounded-lg object-cover" />
+                  {s.photos.map(photo => (
+                    <div key={photo.id} className="relative">
+                      <img src={photo.file_path} alt="" className="h-16 w-16 rounded-lg object-cover" />
+                      {photo.uploaded_by === me && (
+                        <button
+                          onClick={() => removePhoto(s.id, photo.id)}
+                          className="absolute -top-1.5 -right-1.5 bg-white rounded-full p-0.5 shadow text-gray-400 hover:text-red-500"
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
                   ))}
                 </div>
               )}

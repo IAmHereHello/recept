@@ -6,6 +6,7 @@ import { Loader2, Link as LinkIcon, X, ChevronRight, ChevronLeft } from 'lucide-
 const EMPTY = {
   name: '', description: '', cook_time: '', difficulty: '',
   cuisine_type: '', is_vegetarian: false, is_vegan: false,
+  is_side_dish: false, is_baking: false,
   ingredients: [], steps: [],
 }
 
@@ -219,6 +220,16 @@ export function RecipeForm() {
               if (e.target.checked) set('is_vegetarian', true)
             }} className="w-4 h-4 rounded accent-green-600" />
             <span>Vegan</span>
+          </label>
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" checked={form.is_side_dish} onChange={e => set('is_side_dish', e.target.checked)}
+              className="w-4 h-4 rounded accent-green-600" />
+            <span>Bijgerecht</span>
+          </label>
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" checked={form.is_baking} onChange={e => set('is_baking', e.target.checked)}
+              className="w-4 h-4 rounded accent-green-600" />
+            <span>Bakken</span>
           </label>
         </div>
       </section>

@@ -34,6 +34,28 @@ def test_list_recipes_filters(client):
     assert names == ["Veggie Curry"]
 
 
+def test_create_recipe_with_side_dish_and_baking_flags(client):
+    side = make_recipe(client, name="Focaccia", is_side_dish=True)
+    baking = make_recipe(client, name="Sourdough Bread", is_baking=True)
+
+    assert side["is_side_dish"] is True
+    assert side["is_baking"] is False
+    assert baking["is_baking"] is True
+    assert baking["is_side_dish"] is False
+
+
+def test_list_recipes_filters_by_side_dish_and_baking(client):
+    make_recipe(client, name="Focaccia", is_side_dish=True)
+    make_recipe(client, name="Sourdough Bread", is_baking=True)
+    make_recipe(client, name="Spaghetti Bolognese")
+
+    resp = client.get("/recipes/", params={"side_dish": True})
+    assert [r["name"] for r in resp.json()] == ["Focaccia"]
+
+    resp = client.get("/recipes/", params={"baking": True})
+    assert [r["name"] for r in resp.json()] == ["Sourdough Bread"]
+
+
 def test_update_recipe_replaces_ingredients_and_steps(client):
     recipe = make_recipe(client)
     recipe_id = recipe["id"]
@@ -93,6 +115,7 @@ def test_delete_recipe_removes_uploaded_photo_files_from_disk(client, tmp_path, 
     client.post(
         f"/sessions/{session['id']}/photo",
         files={"file": ("dinner.jpg", io.BytesIO(b"fake-image-bytes"), "image/jpeg")},
+        data={"uploaded_by": "michael"},
     )
     uploaded_files = list(upload_dir.iterdir())
     assert len(uploaded_files) == 1
