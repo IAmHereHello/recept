@@ -12,6 +12,31 @@ def test_create_recipe_returns_computed_fields(client):
     assert recipe["cover_photo"] is None
 
 
+def test_create_recipe_freezer_fields_default(client):
+    recipe = make_recipe(client)
+    assert recipe["is_freezable"] is True
+    assert recipe["portions"] is None
+    assert recipe["freezer_months"] is None
+
+
+def test_create_recipe_freezer_fields_explicit(client):
+    recipe = make_recipe(client, portions=4, is_freezable=False, freezer_months=2)
+    assert recipe["portions"] == 4
+    assert recipe["is_freezable"] is False
+    assert recipe["freezer_months"] == 2
+
+
+def test_list_recipes_filters_by_freezable(client):
+    make_recipe(client, name="Soep", is_freezable=True)
+    make_recipe(client, name="Salade", is_freezable=False)
+
+    resp = client.get("/recipes/", params={"freezable": True})
+    assert [r["name"] for r in resp.json()] == ["Soep"]
+
+    resp = client.get("/recipes/", params={"freezable": False})
+    assert [r["name"] for r in resp.json()] == ["Salade"]
+
+
 def test_get_recipe_not_found(client):
     resp = client.get("/recipes/999")
     assert resp.status_code == 404
@@ -77,6 +102,28 @@ def test_update_recipe_replaces_ingredients_and_steps(client):
     assert body["name"] == "Spaghetti Bolognese (v2)"
     assert [i["name"] for i in body["ingredients"]] == ["Tomato sauce"]
     assert [s["description"] for s in body["steps"]] == ["Heat sauce"]
+
+
+def test_update_recipe_freezer_fields(client):
+    recipe = make_recipe(client, portions=2, is_freezable=True, freezer_months=None)
+    recipe_id = recipe["id"]
+
+    updated = {
+        "name": "Spaghetti Bolognese (v2)",
+        "is_vegetarian": False,
+        "is_vegan": False,
+        "portions": 6,
+        "is_freezable": False,
+        "freezer_months": 4,
+        "ingredients": [],
+        "steps": [],
+    }
+    resp = client.put(f"/recipes/{recipe_id}", json=updated)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["portions"] == 6
+    assert body["is_freezable"] is False
+    assert body["freezer_months"] == 4
 
 
 def test_delete_recipe(client):

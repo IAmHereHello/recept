@@ -8,6 +8,7 @@ import { RecipeDetail } from './pages/RecipeDetail'
 import { RecipeForm } from './pages/RecipeForm'
 import { CookingMode } from './pages/CookingMode'
 import { Planner } from './pages/Planner'
+import { Vriezer } from './pages/Vriezer'
 import { Settings } from './pages/Settings'
 
 export default function App() {
@@ -21,6 +22,7 @@ export default function App() {
         <Route path="/recipes/:id/edit" element={<RecipeForm />} />
         <Route path="/recipes/:id/cook" element={<CookingMode />} />
         <Route path="/plan" element={<Planner />} />
+        <Route path="/vriezer" element={<Vriezer />} />
         <Route path="/settings" element={<Settings />} />
       </Routes>
       <Nav />

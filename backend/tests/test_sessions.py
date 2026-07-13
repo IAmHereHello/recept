@@ -45,6 +45,23 @@ def test_pending_reviews_shows_up_for_other_user_only(client):
     assert pending_michael == []
 
 
+def test_pending_reviews_carry_recipe_freezer_fields(client):
+    recipe = make_recipe(client, name="Chili", portions=4, is_freezable=True)
+    client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael"})
+
+    pending = client.get("/sessions/pending/rachel").json()
+    assert pending[0]["is_freezable"] is True
+    assert pending[0]["portions"] == 4
+
+    non_freezable = make_recipe(client, name="Salade", is_freezable=False)
+    client.post("/sessions/", json={"recipe_id": non_freezable["id"], "cooked_by": "michael"})
+
+    pending = client.get("/sessions/pending/rachel").json()
+    salade_entry = next(p for p in pending if p["recipe_name"] == "Salade")
+    assert salade_entry["is_freezable"] is False
+    assert salade_entry["portions"] is None
+
+
 def test_pending_review_cleared_after_rating(client):
     recipe = make_recipe(client)
     session = client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael"}).json()

@@ -8,6 +8,7 @@ router = APIRouter(prefix="/plan", tags=["planner"])
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 COOLDOWN_DAYS = 14
+FREEZER_BOOST_WINDOW_DAYS = 14
 
 
 def _week_start(week_start: str) -> str:
@@ -58,6 +59,24 @@ def _score_recipes(conn: Connection, week_start: str) -> list[dict]:
     return scored
 
 
+def _freezer_candidates(conn: Connection, week_start: str) -> list[dict]:
+    """Freezer batches within FREEZER_BOOST_WINDOW_DAYS of expiry (or already
+    overdue), soonest first. Deliberately bypasses _score_recipes/cooldown:
+    this answers "eat existing leftovers", not "should I cook this again".
+    """
+    horizon = (date.fromisoformat(week_start) + timedelta(days=FREEZER_BOOST_WINDOW_DAYS)).isoformat()
+    rows = conn.execute(
+        """SELECT fi.id AS freezer_item_id, fi.recipe_id, fi.portions_remaining, fi.expires_at,
+                  r.name, r.is_vegetarian
+           FROM freezer_items fi
+           JOIN recipes r ON r.id = fi.recipe_id
+           WHERE fi.expires_at <= ? AND r.is_side_dish = 0 AND r.is_baking = 0
+           ORDER BY fi.expires_at ASC""",
+        (horizon,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def _sides_by_day(conn: Connection, week_start: str) -> dict[str, list]:
     rows = conn.execute(
         """SELECT mps.day, mps.recipe_id, r.name AS recipe_name
@@ -71,6 +90,16 @@ def _sides_by_day(conn: Connection, week_start: str) -> dict[str, list]:
     for row in rows:
         by_day[row["day"]].append({"recipe_id": row["recipe_id"], "recipe_name": row["recipe_name"]})
     return by_day
+
+
+def _attach_freezer_info(conn: Connection, plan: dict) -> None:
+    for entry in plan.values():
+        if entry and entry.get("freezer_item_id"):
+            fi = conn.execute(
+                "SELECT portions_remaining, portions_total, expires_at FROM freezer_items WHERE id = ?",
+                (entry["freezer_item_id"],)
+            ).fetchone()
+            entry["freezer"] = dict(fi) if fi else None
 
 
 @router.get("/{week_start}")
@@ -87,7 +116,8 @@ def get_week(week_start: str, conn: Connection = Depends(get_db)):
         if entry is None and not sides[day]:
             result[day] = None
         else:
-            result[day] = {**(entry or {"week_start": ws, "day": day, "recipe_id": None, "locked": False}), "sides": sides[day]}
+            result[day] = {**(entry or {"week_start": ws, "day": day, "recipe_id": None, "locked": False, "freezer_item_id": None}), "sides": sides[day]}
+    _attach_freezer_info(conn, result)
     return result
 
 
@@ -99,22 +129,48 @@ def suggest_week(week_start: str, vegetarian_only: bool = False, conn: Connectio
     ).fetchall()
     locked_days = {row["day"] for row in locked}
     locked_recipe_ids = {row["recipe_id"] for row in locked}
+    open_days = [d for d in DAYS if d not in locked_days]
+
+    suggestions: dict = {}
+    used_ids: set = set()
+
+    # Priority pass: freezer batches nearing expiry get first claim on open
+    # days (soonest-expiring -> earliest open day), ahead of normal scoring.
+    freezer_candidates = _freezer_candidates(conn, ws)
+    if vegetarian_only:
+        freezer_candidates = [f for f in freezer_candidates if f["is_vegetarian"]]
+
+    fc_idx = 0
+    for day in open_days:
+        while fc_idx < len(freezer_candidates) and (
+            freezer_candidates[fc_idx]["recipe_id"] in locked_recipe_ids
+            or freezer_candidates[fc_idx]["recipe_id"] in used_ids
+        ):
+            fc_idx += 1
+        if fc_idx < len(freezer_candidates):
+            f = freezer_candidates[fc_idx]
+            suggestions[day] = {
+                "id": f["recipe_id"], "name": f["name"],
+                "from_freezer": True,
+                "freezer_item_id": f["freezer_item_id"],
+                "portions_remaining": f["portions_remaining"],
+            }
+            used_ids.add(f["recipe_id"])
+            fc_idx += 1
 
     scored = _score_recipes(conn, ws)
     if vegetarian_only:
         scored = [r for r in scored if r["is_vegetarian"]]
+    available = [r for r in scored if r["id"] not in locked_recipe_ids and r["id"] not in used_ids]
 
-    available = [r for r in scored if r["id"] not in locked_recipe_ids]
-    suggestions = {}
-    used_ids: set = set()
     idx = 0
-    for day in DAYS:
-        if day in locked_days:
+    for day in open_days:
+        if day in suggestions:
             continue
         while idx < len(available) and available[idx]["id"] in used_ids:
             idx += 1
         if idx < len(available):
-            suggestions[day] = available[idx]
+            suggestions[day] = {**available[idx], "from_freezer": False}
             used_ids.add(available[idx]["id"])
             idx += 1
         else:
@@ -132,13 +188,13 @@ def set_day(week_start: str, day: str, body: MealPlanEntry, conn: Connection = D
         if recipe and (recipe["is_side_dish"] or recipe["is_baking"]):
             raise HTTPException(400, "This recipe is a side dish or baking recipe and cannot be used as a main dish")
     conn.execute(
-        """INSERT INTO meal_plan (week_start, day, recipe_id, locked)
-           VALUES (?,?,?,?)
-           ON CONFLICT(week_start, day) DO UPDATE SET recipe_id=excluded.recipe_id, locked=excluded.locked""",
-        (ws, day, body.recipe_id, int(body.locked))
+        """INSERT INTO meal_plan (week_start, day, recipe_id, locked, freezer_item_id)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(week_start, day) DO UPDATE SET recipe_id=excluded.recipe_id, locked=excluded.locked, freezer_item_id=excluded.freezer_item_id""",
+        (ws, day, body.recipe_id, int(body.locked), body.freezer_item_id)
     )
     conn.commit()
-    return {"week_start": ws, "day": day, "recipe_id": body.recipe_id, "locked": body.locked}
+    return {"week_start": ws, "day": day, "recipe_id": body.recipe_id, "locked": body.locked, "freezer_item_id": body.freezer_item_id}
 
 
 @router.delete("/{week_start}/{day}", status_code=204)

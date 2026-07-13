@@ -46,6 +46,9 @@ class RecipeIn(BaseModel):
     is_vegan: bool = False
     is_side_dish: bool = False
     is_baking: bool = False
+    portions: Optional[int] = None
+    is_freezable: bool = True
+    freezer_months: Optional[int] = None
     ingredients: List[IngredientIn] = []
     steps: List[StepIn] = []
 
@@ -109,6 +112,8 @@ class PendingReviewOut(BaseModel):
     recipe_id: int
     recipe_name: str
     cooked_at: str
+    is_freezable: bool
+    portions: Optional[int] = None
 
 
 class RatingIn(BaseModel):
@@ -128,6 +133,7 @@ class MealPlanEntry(BaseModel):
     day: Day
     recipe_id: Optional[int] = None
     locked: bool = False
+    freezer_item_id: Optional[int] = None
 
 
 class SideDishIn(BaseModel):
@@ -140,3 +146,33 @@ class ImportUrlRequest(BaseModel):
 
 class GroceryRequest(BaseModel):
     week_start: str
+
+
+class FreezerItemIn(BaseModel):
+    recipe_id: int
+    cook_session_id: Optional[int] = None
+    portions_total: int = Field(..., gt=0)
+    frozen_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    added_by: Optional[User] = None
+
+
+class FreezerItemOut(BaseModel):
+    id: int
+    recipe_id: int
+    recipe_name: str
+    cook_session_id: Optional[int] = None
+    portions_total: int
+    portions_remaining: int
+    frozen_at: str
+    expires_at: str
+    added_by: Optional[User] = None
+    created_at: str
+
+
+class FreezerConsumeIn(BaseModel):
+    portions: int = Field(..., gt=0)
+
+
+class FreezerExpiresIn(BaseModel):
+    expires_at: str

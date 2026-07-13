@@ -26,6 +26,7 @@ vi.mock('../lib/api', () => ({
     getGroceries: vi.fn(),
     addSideDish: vi.fn(),
     removeSideDish: vi.fn(),
+    consumeFreezerItem: vi.fn(),
   },
 }))
 
@@ -257,5 +258,108 @@ describe('Planner side dishes', () => {
 
     expect(api.removeSideDish).toHaveBeenCalledWith('2026-01-05', 'mon', 2)
     await waitFor(() => expect(screen.queryByText('Focaccia')).not.toBeInTheDocument())
+  })
+})
+
+describe('Planner freezer integration', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-01-05T12:00:00')) // Monday of the displayed week: nothing is past
+    api.getRecipes.mockResolvedValue([{ id: 1, name: 'Chili' }])
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('renders a freezer suggestion chip with the sky-blue style, distinct from a normal green suggestion', async () => {
+    const user = userEvent.setup()
+    api.getWeek.mockResolvedValue(EMPTY_WEEK)
+    api.suggestWeek.mockResolvedValue({
+      mon: { id: 1, name: 'Chili', from_freezer: true, freezer_item_id: 99, portions_remaining: 2 },
+      tue: null, wed: null, thu: null, fri: null, sat: null, sun: null,
+    })
+    renderPlanner()
+    await screen.findByText('Maandag')
+
+    await user.click(screen.getByRole('button', { name: /Suggesties/ }))
+
+    const chip = await screen.findByText('❄️ Chili')
+    expect(chip.className).toContain('bg-sky-50')
+    expect(chip.className).not.toContain('bg-green-50')
+  })
+
+  it('applying a freezer suggestion sends freezer_item_id and shows the freezer badge afterwards', async () => {
+    const user = userEvent.setup()
+    api.getWeek
+      .mockResolvedValueOnce(EMPTY_WEEK)
+      .mockResolvedValueOnce({
+        ...EMPTY_WEEK,
+        mon: {
+          week_start: '2026-01-05', day: 'mon', recipe_id: 1, locked: false, freezer_item_id: 99,
+          freezer: { portions_remaining: 2, portions_total: 3, expires_at: '2026-01-15' },
+        },
+      })
+    api.suggestWeek.mockResolvedValue({
+      mon: { id: 1, name: 'Chili', from_freezer: true, freezer_item_id: 99, portions_remaining: 2 },
+      tue: null, wed: null, thu: null, fri: null, sat: null, sun: null,
+    })
+    api.setDay.mockResolvedValue({})
+    renderPlanner()
+    await screen.findByText('Maandag')
+
+    await user.click(screen.getByRole('button', { name: /Suggesties/ }))
+    await user.click(await screen.findByText('❄️ Chili'))
+
+    await waitFor(() => {
+      expect(api.setDay).toHaveBeenCalledWith('2026-01-05', 'mon',
+        expect.objectContaining({ recipe_id: 1, freezer_item_id: 99 }))
+    })
+    expect(await screen.findByText('Uit de vriezer')).toBeInTheDocument()
+  })
+
+  it('shows the "Gegeten" action for a freezer-linked day and consumes portions on confirm', async () => {
+    const user = userEvent.setup()
+    api.getWeek.mockResolvedValue({
+      ...EMPTY_WEEK,
+      mon: {
+        week_start: '2026-01-05', day: 'mon', recipe_id: 1, locked: false, freezer_item_id: 99,
+        freezer: { portions_remaining: 2, portions_total: 3, expires_at: '2026-01-15' },
+      },
+    })
+    api.consumeFreezerItem.mockResolvedValue(null) // fully consumed
+    renderPlanner()
+    await screen.findByText('Uit de vriezer')
+
+    await user.click(screen.getByText('Gegeten'))
+    const input = screen.getByRole('spinbutton')
+    expect(input).toHaveValue(2) // prefilled with portions_remaining
+    await user.click(screen.getByRole('button', { name: 'Bevestigen' }))
+
+    await waitFor(() => {
+      expect(api.consumeFreezerItem).toHaveBeenCalledWith(99, { portions: 2 })
+    })
+    await waitFor(() => expect(screen.queryByText('Uit de vriezer')).not.toBeInTheDocument())
+  })
+
+  it('regression: toggling lock on a freezer-linked day preserves freezer_item_id', async () => {
+    const user = userEvent.setup()
+    api.getWeek.mockResolvedValue({
+      ...EMPTY_WEEK,
+      mon: {
+        week_start: '2026-01-05', day: 'mon', recipe_id: 1, locked: false, freezer_item_id: 99,
+        freezer: { portions_remaining: 2, portions_total: 3, expires_at: '2026-01-15' },
+      },
+    })
+    api.setDay.mockResolvedValue({})
+    renderPlanner()
+    const mondayCard = (await screen.findByText('Chili')).closest('.rounded-xl')
+
+    const lockButton = within(mondayCard).getAllByRole('button')[0]
+    await user.click(lockButton)
+
+    expect(api.setDay).toHaveBeenCalledWith('2026-01-05', 'mon',
+      expect.objectContaining({ recipe_id: 1, locked: true, freezer_item_id: 99 }))
   })
 })

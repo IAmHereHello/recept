@@ -75,6 +75,18 @@ def init_db():
             UNIQUE(cook_session_id, user)
         );
 
+        CREATE TABLE IF NOT EXISTS freezer_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+            cook_session_id INTEGER REFERENCES cook_sessions(id) ON DELETE SET NULL,
+            portions_total INTEGER NOT NULL CHECK(portions_total > 0),
+            portions_remaining INTEGER NOT NULL CHECK(portions_remaining >= 0),
+            frozen_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            added_by TEXT CHECK(added_by IN ('michael','rachel')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
         CREATE TABLE IF NOT EXISTS meal_plan (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             week_start TEXT NOT NULL,
@@ -134,6 +146,22 @@ def init_db():
     if "finished_at" not in cols:
         conn.execute("ALTER TABLE cook_sessions ADD COLUMN finished_at TEXT")
         conn.execute("UPDATE cook_sessions SET finished_at = cooked_at WHERE finished_at IS NULL")
+
+    # Migration: freezer tracking fields, added after the initial recipes table.
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(recipes)").fetchall()]
+    if "portions" not in cols:
+        conn.execute("ALTER TABLE recipes ADD COLUMN portions INTEGER")
+    if "is_freezable" not in cols:
+        conn.execute("ALTER TABLE recipes ADD COLUMN is_freezable INTEGER NOT NULL DEFAULT 1")
+    if "freezer_months" not in cols:
+        conn.execute("ALTER TABLE recipes ADD COLUMN freezer_months INTEGER")
+
+    # Migration: link a meal_plan day to the freezer batch it was suggested from.
+    # SET NULL on delete so consuming/removing the freezer item detaches the
+    # day's badge instead of deleting the day's plan entry.
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(meal_plan)").fetchall()]
+    if "freezer_item_id" not in cols:
+        conn.execute("ALTER TABLE meal_plan ADD COLUMN freezer_item_id INTEGER REFERENCES freezer_items(id) ON DELETE SET NULL")
 
     conn.commit()
     conn.close()

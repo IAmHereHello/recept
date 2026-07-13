@@ -61,6 +61,13 @@ export const api = {
   // Import
   importUrl: (url) => req('POST', '/import/', { url }),
 
+  // Freezer
+  getFreezerItems: () => req('GET', '/freezer/'),
+  createFreezerItem: (data) => req('POST', '/freezer/', data),
+  consumeFreezerItem: (id, data) => req('POST', `/freezer/${id}/consume`, data),
+  setFreezerItemExpiry: (id, data) => req('POST', `/freezer/${id}/expires`, data),
+  deleteFreezerItem: (id) => req('DELETE', `/freezer/${id}`),
+
   // Health / version — served at /health directly, not under /api
   getHealth: () => fetch('/health').then(res => res.json()),
 }

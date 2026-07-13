@@ -9,6 +9,7 @@ vi.mock('../lib/api', () => ({
   api: {
     getPendingReviews: vi.fn(),
     rateSession: vi.fn(),
+    createFreezerItem: vi.fn(),
   },
 }))
 
@@ -98,5 +99,95 @@ describe('ReviewGate', () => {
     await user.click(screen.getByRole('button', { name: /Opslaan/ }))
 
     await waitFor(() => expect(container).toBeEmptyDOMElement())
+  })
+
+  it('shows a freezer step after rating a freezable recipe, prefilled from portions', async () => {
+    const user = userEvent.setup()
+    setUser('rachel')
+    api.getPendingReviews.mockResolvedValue([
+      { id: 1, recipe_id: 10, recipe_name: 'Chili', cooked_at: '2026-01-01T10:00:00', is_freezable: true, portions: 4 },
+    ])
+    api.rateSession.mockResolvedValue({})
+
+    render(<ReviewGate />)
+    await screen.findByText('Chili')
+
+    const stars = screen.getAllByRole('button', { name: '' })
+    await user.click(stars[3])
+    await user.click(screen.getByRole('button', { name: /Opslaan/ }))
+
+    expect(await screen.findByText('Vriezer')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Aantal porties')).toHaveValue(4)
+    expect(api.rateSession).toHaveBeenCalledWith(1, { user: 'rachel', stars: 4 })
+  })
+
+  it('does not show a freezer step for a non-freezable recipe, advancing the queue directly', async () => {
+    const user = userEvent.setup()
+    setUser('rachel')
+    api.getPendingReviews.mockResolvedValue([
+      { id: 1, recipe_id: 10, recipe_name: 'Salade', cooked_at: '2026-01-01T10:00:00', is_freezable: false, portions: null },
+    ])
+    api.rateSession.mockResolvedValue({})
+
+    const { container } = render(<ReviewGate />)
+    await screen.findByText('Salade')
+
+    const stars = screen.getAllByRole('button', { name: '' })
+    await user.click(stars[3])
+    await user.click(screen.getByRole('button', { name: /Opslaan/ }))
+
+    await waitFor(() => expect(container).toBeEmptyDOMElement())
+    expect(api.createFreezerItem).not.toHaveBeenCalled()
+  })
+
+  it('Overslaan skips the freezer step without creating a freezer item', async () => {
+    const user = userEvent.setup()
+    setUser('rachel')
+    api.getPendingReviews.mockResolvedValue([
+      { id: 1, recipe_id: 10, recipe_name: 'Chili', cooked_at: '2026-01-01T10:00:00', is_freezable: true, portions: null },
+    ])
+    api.rateSession.mockResolvedValue({})
+
+    const { container } = render(<ReviewGate />)
+    await screen.findByText('Chili')
+
+    const stars = screen.getAllByRole('button', { name: '' })
+    await user.click(stars[3])
+    await user.click(screen.getByRole('button', { name: /Opslaan/ }))
+    await screen.findByText('Vriezer')
+
+    await user.click(screen.getByRole('button', { name: 'Overslaan' }))
+
+    await waitFor(() => expect(container).toBeEmptyDOMElement())
+    expect(api.createFreezerItem).not.toHaveBeenCalled()
+  })
+
+  it('Bewaren creates a freezer item linked to the recipe and session, then advances', async () => {
+    const user = userEvent.setup()
+    setUser('rachel')
+    api.getPendingReviews.mockResolvedValue([
+      { id: 1, recipe_id: 10, recipe_name: 'Chili', cooked_at: '2026-01-01T10:00:00', is_freezable: true, portions: null },
+      { id: 2, recipe_id: 11, recipe_name: 'Curry', cooked_at: '2026-01-02T10:00:00', is_freezable: false },
+    ])
+    api.rateSession.mockResolvedValue({})
+    api.createFreezerItem.mockResolvedValue({})
+
+    render(<ReviewGate />)
+    await screen.findByText('Chili')
+
+    const stars = screen.getAllByRole('button', { name: '' })
+    await user.click(stars[3])
+    await user.click(screen.getByRole('button', { name: /Opslaan/ }))
+    await screen.findByText('Vriezer')
+
+    await user.type(screen.getByPlaceholderText('Aantal porties'), '3')
+    await user.click(screen.getByRole('button', { name: /Bewaren/ }))
+
+    await waitFor(() => {
+      expect(api.createFreezerItem).toHaveBeenCalledWith(
+        expect.objectContaining({ recipe_id: 10, cook_session_id: 1, portions_total: 3, added_by: 'rachel' })
+      )
+    })
+    expect(await screen.findByText('Curry')).toBeInTheDocument()
   })
 })

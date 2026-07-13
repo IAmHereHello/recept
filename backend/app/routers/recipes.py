@@ -47,6 +47,7 @@ def list_recipes(
     difficulty: str | None = None,
     side_dish: bool | None = None,
     baking: bool | None = None,
+    freezable: bool | None = None,
     conn: Connection = Depends(get_db),
 ):
     query = "SELECT id FROM recipes WHERE 1=1"
@@ -69,6 +70,9 @@ def list_recipes(
     if baking is not None:
         query += " AND is_baking = ?"
         params.append(1 if baking else 0)
+    if freezable is not None:
+        query += " AND is_freezable = ?"
+        params.append(1 if freezable else 0)
     query += " ORDER BY created_at DESC"
     rows = conn.execute(query, params).fetchall()
     return [_fetch_recipe(conn, row["id"]) for row in rows]
@@ -77,8 +81,8 @@ def list_recipes(
 @router.post("/", response_model=RecipeOut, status_code=201)
 def create_recipe(body: RecipeIn, conn: Connection = Depends(get_db)):
     cur = conn.execute(
-        "INSERT INTO recipes (name, description, cook_time, difficulty, cuisine_type, is_vegetarian, is_vegan, is_side_dish, is_baking) VALUES (?,?,?,?,?,?,?,?,?)",
-        (body.name, body.description, body.cook_time, body.difficulty, body.cuisine_type, int(body.is_vegetarian), int(body.is_vegan), int(body.is_side_dish), int(body.is_baking))
+        "INSERT INTO recipes (name, description, cook_time, difficulty, cuisine_type, is_vegetarian, is_vegan, is_side_dish, is_baking, portions, is_freezable, freezer_months) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (body.name, body.description, body.cook_time, body.difficulty, body.cuisine_type, int(body.is_vegetarian), int(body.is_vegan), int(body.is_side_dish), int(body.is_baking), body.portions, int(body.is_freezable), body.freezer_months)
     )
     recipe_id = cur.lastrowid
     for ing in body.ingredients:
@@ -104,8 +108,8 @@ def get_recipe(recipe_id: int, conn: Connection = Depends(get_db)):
 def update_recipe(recipe_id: int, body: RecipeIn, conn: Connection = Depends(get_db)):
     _fetch_recipe(conn, recipe_id)
     conn.execute(
-        "UPDATE recipes SET name=?, description=?, cook_time=?, difficulty=?, cuisine_type=?, is_vegetarian=?, is_vegan=?, is_side_dish=?, is_baking=? WHERE id=?",
-        (body.name, body.description, body.cook_time, body.difficulty, body.cuisine_type, int(body.is_vegetarian), int(body.is_vegan), int(body.is_side_dish), int(body.is_baking), recipe_id)
+        "UPDATE recipes SET name=?, description=?, cook_time=?, difficulty=?, cuisine_type=?, is_vegetarian=?, is_vegan=?, is_side_dish=?, is_baking=?, portions=?, is_freezable=?, freezer_months=? WHERE id=?",
+        (body.name, body.description, body.cook_time, body.difficulty, body.cuisine_type, int(body.is_vegetarian), int(body.is_vegan), int(body.is_side_dish), int(body.is_baking), body.portions, int(body.is_freezable), body.freezer_months, recipe_id)
     )
     conn.execute("DELETE FROM ingredients WHERE recipe_id = ?", (recipe_id,))
     conn.execute("DELETE FROM steps WHERE recipe_id = ?", (recipe_id,))

@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import UPLOAD_DIR
 from app.database import init_db
-from app.routers import recipes, sessions, planner, import_recipe
+from app.routers import recipes, sessions, planner, import_recipe, freezer
 
 
 def _get_git_hash() -> str:
@@ -45,6 +45,7 @@ app.include_router(recipes.router)
 app.include_router(sessions.router)
 app.include_router(planner.router)
 app.include_router(import_recipe.router)
+app.include_router(freezer.router)
 
 
 @app.get("/health")

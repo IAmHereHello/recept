@@ -7,6 +7,7 @@ const EMPTY = {
   name: '', description: '', cook_time: '', difficulty: '',
   cuisine_type: '', is_vegetarian: false, is_vegan: false,
   is_side_dish: false, is_baking: false,
+  portions: '', is_freezable: true, freezer_months: '',
   ingredients: [], steps: [],
 }
 
@@ -31,7 +32,7 @@ export function RecipeForm() {
   useEffect(() => {
     if (isEdit) {
       api.getRecipe(id).then(r => {
-        setForm({ ...r, cook_time: r.cook_time ?? '' })
+        setForm({ ...r, cook_time: r.cook_time ?? '', portions: r.portions ?? '', freezer_months: r.freezer_months ?? '' })
         setIngredientPhase('amounts')
         setStepsText(
           (r.steps || [])
@@ -120,6 +121,8 @@ export function RecipeForm() {
         ...form,
         cook_time: form.cook_time ? Number(form.cook_time) : null,
         difficulty: form.difficulty || null,
+        portions: form.portions ? Number(form.portions) : null,
+        freezer_months: form.freezer_months ? Number(form.freezer_months) : null,
         ingredients: form.ingredients.filter(i => i.name.trim()),
         steps: parsedSteps,
       }
@@ -208,7 +211,22 @@ export function RecipeForm() {
             placeholder="Italiaans, Aziatisch..."
             className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
         </div>
-        <div className="flex gap-6">
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Aantal porties</label>
+            <input type="number" min="1" value={form.portions} onChange={e => set('portions', e.target.value)}
+              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
+          </div>
+          {form.is_freezable && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Vriezer THT (maanden)</label>
+              <input type="number" min="1" value={form.freezer_months} onChange={e => set('freezer_months', e.target.value)}
+                placeholder="3"
+                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
+            </div>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-x-6 gap-y-2">
           <label className="flex items-center gap-2 text-sm cursor-pointer">
             <input type="checkbox" checked={form.is_vegetarian} onChange={e => set('is_vegetarian', e.target.checked)}
               className="w-4 h-4 rounded accent-green-600" />
@@ -230,6 +248,11 @@ export function RecipeForm() {
             <input type="checkbox" checked={form.is_baking} onChange={e => set('is_baking', e.target.checked)}
               className="w-4 h-4 rounded accent-green-600" />
             <span>Bakken</span>
+          </label>
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" checked={form.is_freezable} onChange={e => set('is_freezable', e.target.checked)}
+              className="w-4 h-4 rounded accent-green-600" />
+            <span>Invriesbaar</span>
           </label>
         </div>
       </section>

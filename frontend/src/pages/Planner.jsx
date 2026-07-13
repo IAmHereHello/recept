@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
 import {
-  ChevronLeft, ChevronRight, Sparkles, Lock, Unlock, ShoppingCart, X, ChefHat
+  ChevronLeft, ChevronRight, Sparkles, Lock, Unlock, ShoppingCart, X, ChefHat, Snowflake
 } from 'lucide-react'
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
@@ -44,6 +44,7 @@ export function Planner() {
   const [grocery, setGrocery] = useState(null)
   const [search, setSearch] = useState('')
   const [shareStatus, setShareStatus] = useState('')
+  const [freezerConsumeTarget, setFreezerConsumeTarget] = useState(null) // { day, item: entry.freezer, freezerItemId, portions }
 
   useEffect(() => {
     setLoading(true)
@@ -60,10 +61,20 @@ export function Planner() {
   }
 
   async function applySuggestion(day) {
-    if (!suggestions?.[day]) return
-    const entry = { week_start: weekStart, day, recipe_id: suggestions[day].id, locked: false }
+    const s = suggestions?.[day]
+    if (!s) return
+    const freezerItemId = s.from_freezer ? s.freezer_item_id : null
+    const entry = { week_start: weekStart, day, recipe_id: s.id, locked: false, freezer_item_id: freezerItemId }
     await api.setDay(weekStart, day, entry)
-    setPlan(p => ({ ...p, [day]: { ...entry, recipe: suggestions[day], sides: p[day]?.sides || [] } }))
+    if (freezerItemId) {
+      // Suggestions only carry portions_remaining, not the full freezer batch
+      // shape get_week() attaches (portions_total/expires_at) — refetch that
+      // day's info from the source of truth rather than guessing it locally.
+      const week = await api.getWeek(weekStart)
+      setPlan(p => ({ ...p, [day]: week[day] }))
+    } else {
+      setPlan(p => ({ ...p, [day]: { ...entry, recipe: s, sides: p[day]?.sides || [] } }))
+    }
   }
 
   async function applyAllSuggestions() {
@@ -73,7 +84,7 @@ export function Planner() {
   async function toggleLock(day) {
     const entry = plan[day]
     if (!entry?.recipe_id) return
-    const updated = { week_start: weekStart, day, recipe_id: entry.recipe_id, locked: !entry.locked }
+    const updated = { week_start: weekStart, day, recipe_id: entry.recipe_id, locked: !entry.locked, freezer_item_id: entry.freezer_item_id ?? null }
     await api.setDay(weekStart, day, updated)
     setPlan(p => ({ ...p, [day]: { ...p[day], locked: !entry.locked } }))
   }
@@ -111,6 +122,20 @@ export function Planner() {
       }
       return { ...p, [day]: { ...p[day], sides: daySides } }
     })
+  }
+
+  async function submitFreezerConsume() {
+    const portions = Number(freezerConsumeTarget.portions)
+    if (!portions || portions <= 0) return
+    const { day, freezerItemId } = freezerConsumeTarget
+    const updated = await api.consumeFreezerItem(freezerItemId, { portions })
+    setPlan(p => ({
+      ...p,
+      [day]: updated
+        ? { ...p[day], freezer: { portions_remaining: updated.portions_remaining, portions_total: updated.portions_total, expires_at: updated.expires_at } }
+        : { ...p[day], freezer_item_id: null, freezer: null },
+    }))
+    setFreezerConsumeTarget(null)
   }
 
   function selectPickerRecipe(r) {
@@ -196,9 +221,15 @@ export function Planner() {
             Alles toepassen
           </button>
         )}
+        <Link
+          to="/vriezer"
+          className="flex items-center gap-2 border border-gray-200 px-3 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-50 transition ml-auto"
+        >
+          <Snowflake size={14} /> Vriezer
+        </Link>
         <button
           onClick={loadGrocery}
-          className="flex items-center gap-2 border border-gray-200 px-3 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-50 transition ml-auto"
+          className="flex items-center gap-2 border border-gray-200 px-3 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-50 transition"
         >
           <ShoppingCart size={14} /> Boodschappen
         </button>
@@ -240,7 +271,7 @@ export function Planner() {
                     <Link to={`/recipes/${recipeId}`} className="text-sm font-medium text-gray-900 hover:text-green-600 flex-1">
                       {recipeName}
                     </Link>
-                    {entry?.locked && <Lock size={12} className="text-green-600" />}
+                    {Boolean(entry?.locked) && <Lock size={12} className="text-green-600" />}
                   </div>
                 ) : isPast ? (
                   <div className="text-sm text-gray-300 italic">Geen gerecht</div>
@@ -255,9 +286,13 @@ export function Planner() {
                     {suggestion && !entry?.locked && (
                       <button
                         onClick={() => applySuggestion(day)}
-                        className="text-xs text-green-600 bg-green-50 px-2 py-0.5 rounded-full hover:bg-green-100 transition"
+                        className={
+                          suggestion.from_freezer
+                            ? 'text-xs text-sky-600 bg-sky-50 px-2 py-0.5 rounded-full hover:bg-sky-100 transition'
+                            : 'text-xs text-green-600 bg-green-50 px-2 py-0.5 rounded-full hover:bg-green-100 transition'
+                        }
                       >
-                        ✨ {suggestion.name}
+                        {suggestion.from_freezer ? '❄️' : '✨'} {suggestion.name}
                       </button>
                     )}
                   </div>
@@ -265,6 +300,25 @@ export function Planner() {
 
                 {suggestion && recipeName && !isPast && (
                   <div className="text-xs text-gray-400 mt-1">Suggestie: {suggestion.name}</div>
+                )}
+
+                {entry?.freezer_item_id && entry?.freezer && (
+                  <div className="flex items-center gap-2 mt-1.5">
+                    <span className="flex items-center gap-1 text-xs text-sky-600 bg-sky-50 px-2 py-0.5 rounded-full">
+                      <Snowflake size={10} /> Uit de vriezer
+                    </span>
+                    {!isPast && (
+                      <button
+                        onClick={() => setFreezerConsumeTarget({
+                          day, freezerItemId: entry.freezer_item_id,
+                          portions: String(entry.freezer.portions_remaining),
+                        })}
+                        className="text-xs text-sky-600 hover:text-sky-700 font-medium"
+                      >
+                        Gegeten
+                      </button>
+                    )}
+                  </div>
                 )}
 
                 {(entry?.sides?.length > 0 || !isPast) && (
@@ -331,6 +385,32 @@ export function Planner() {
                 </button>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+
+      {freezerConsumeTarget && (
+        <div className="fixed inset-0 bg-black/40 z-[60] flex items-end">
+          <div className="bg-white w-full max-w-lg mx-auto rounded-t-2xl p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-gray-900">Uit de vriezer gegeten</h3>
+              <button onClick={() => setFreezerConsumeTarget(null)}><X size={20} className="text-gray-500" /></button>
+            </div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Aantal porties</label>
+            <input
+              type="number" min="1"
+              value={freezerConsumeTarget.portions}
+              onChange={e => setFreezerConsumeTarget(c => ({ ...c, portions: e.target.value }))}
+              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-sky-500"
+              autoFocus
+            />
+            <button
+              onClick={submitFreezerConsume}
+              disabled={!freezerConsumeTarget.portions}
+              className="w-full bg-sky-600 text-white py-2.5 rounded-xl text-sm font-medium hover:bg-sky-700 disabled:opacity-50 transition"
+            >
+              Bevestigen
+            </button>
           </div>
         </div>
       )}

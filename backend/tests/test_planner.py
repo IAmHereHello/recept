@@ -79,6 +79,72 @@ def test_suggest_vegetarian_only_filter(client):
     assert suggested_names == {"Veggie"}
 
 
+def test_suggest_boosts_freezer_item_nearing_expiry(client):
+    week_start = "2026-01-05"
+    freezer_recipe = make_recipe(client, name="Frozen Chili")
+    other_recipe = make_recipe(client, name="Fresh Idea")
+    # within FREEZER_BOOST_WINDOW_DAYS (14) of week_start
+    item = client.post("/freezer/", json={
+        "recipe_id": freezer_recipe["id"], "portions_total": 3, "expires_at": "2026-01-15",
+    }).json()
+
+    suggestions = client.post(f"/plan/suggest/{week_start}").json()
+    assert suggestions["mon"]["from_freezer"] is True
+    assert suggestions["mon"]["freezer_item_id"] == item["id"]
+    assert suggestions["mon"]["portions_remaining"] == 3
+    assert suggestions["mon"]["id"] == freezer_recipe["id"]
+
+    # remaining days fall back to normal scoring, tagged from_freezer False
+    other_days = [suggestions[d] for d in ["tue", "wed"] if suggestions[d]]
+    assert all(s["from_freezer"] is False for s in other_days)
+
+
+def test_suggest_ignores_freezer_item_outside_window(client):
+    week_start = "2026-01-05"
+    freezer_recipe = make_recipe(client, name="Frozen Chili")
+    client.post("/freezer/", json={
+        "recipe_id": freezer_recipe["id"], "portions_total": 3, "expires_at": "2026-03-01",
+    })
+
+    suggestions = client.post(f"/plan/suggest/{week_start}").json()
+    assert suggestions["mon"]["from_freezer"] is False
+
+
+def test_suggest_freezer_boost_respects_vegetarian_filter(client):
+    week_start = "2026-01-05"
+    meaty = make_recipe(client, name="Frozen Meat Stew", is_vegetarian=False)
+    client.post("/freezer/", json={"recipe_id": meaty["id"], "portions_total": 2, "expires_at": "2026-01-15"})
+
+    suggestions = client.post(f"/plan/suggest/{week_start}", params={"vegetarian_only": True}).json()
+    assert all(s is None or s["id"] != meaty["id"] for s in suggestions.values())
+
+
+def test_suggest_freezer_boost_excludes_locked_recipe(client):
+    week_start = "2026-01-05"
+    recipe = make_recipe(client, name="Frozen Chili")
+    client.post("/freezer/", json={"recipe_id": recipe["id"], "portions_total": 2, "expires_at": "2026-01-15"})
+    client.put(f"/plan/{week_start}/mon", json={"week_start": week_start, "day": "mon", "recipe_id": recipe["id"], "locked": True})
+
+    suggestions = client.post(f"/plan/suggest/{week_start}").json()
+    assert "mon" not in suggestions
+    assert all(s is None or s["id"] != recipe["id"] for s in suggestions.values())
+
+
+def test_set_day_with_freezer_item_reflected_in_get_week(client):
+    week_start = "2026-01-05"
+    recipe = make_recipe(client, name="Frozen Chili")
+    item = client.post("/freezer/", json={"recipe_id": recipe["id"], "portions_total": 3}).json()
+
+    client.put(f"/plan/{week_start}/mon", json={
+        "week_start": week_start, "day": "mon", "recipe_id": recipe["id"],
+        "locked": False, "freezer_item_id": item["id"],
+    })
+
+    week = client.get(f"/plan/{week_start}").json()
+    assert week["mon"]["freezer_item_id"] == item["id"]
+    assert week["mon"]["freezer"]["portions_remaining"] == 3
+
+
 def test_grocery_list_aggregates_ingredients_by_recipe(client, monkeypatch):
     _freeze_today(monkeypatch, "2026-01-05")
     recipe = make_recipe(client)

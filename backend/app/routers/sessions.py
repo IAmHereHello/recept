@@ -164,7 +164,7 @@ def pending_reviews(user: User, conn: Connection = Depends(get_db)):
     # via cooking mode — in which case the cook reviews it later too, deferred
     # to this same gate rather than rating immediately when it's done.
     rows = conn.execute(
-        """SELECT cs.id, cs.recipe_id, cs.cooked_at, r.name AS recipe_name
+        """SELECT cs.id, cs.recipe_id, cs.cooked_at, r.name AS recipe_name, r.is_freezable, r.portions
            FROM cook_sessions cs
            JOIN recipes r ON r.id = cs.recipe_id
            WHERE cs.finished_at IS NOT NULL
