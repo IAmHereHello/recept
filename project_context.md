@@ -51,7 +51,8 @@ ReceptApp/
 │           ├── recipes.py       # CRUD for recipes + ingredients + steps
 │           ├── sessions.py      # Cook sessions, ratings, photo uploads
 │           ├── planner.py       # Weekly meal plan, suggestions, grocery list
-│           └── import_recipe.py # AI-powered URL → recipe import
+│           ├── import_recipe.py # AI-powered URL → recipe import
+│           └── freezer.py       # Freezer inventory (THT tracking, consume, expiry)
 └── frontend/
     ├── vite.config.js
     ├── vitest.config.js
@@ -78,6 +79,7 @@ ReceptApp/
             ├── RecipeForm.jsx   # Create / edit recipe + URL import
             ├── CookingMode.jsx  # Guided step-by-step cooking flow (wake lock, timers, finish+photo)
             ├── Planner.jsx      # Weekly planner, side dishes, past-day handling, grocery list modal
+            ├── Vriezer.jsx      # Freezer inventory (THT color-coding, consume/edit/delete, manual add)
             └── Settings.jsx     # Identity picker + app version + update check
 ```
 
@@ -89,7 +91,8 @@ Backend tests live in `backend/tests/` (pytest, `pytest.ini`, `requirements-dev.
 
 ```
 recipes          — id, name, description, cook_time, difficulty, cuisine_type,
-                   is_vegetarian, is_vegan, is_side_dish, is_baking, created_at
+                   is_vegetarian, is_vegan, is_side_dish, is_baking,
+                   portions, is_freezable (default true), freezer_months (nullable THT override), created_at
 ingredients      — id, recipe_id, name, amount, unit, sort_order
 steps            — id, recipe_id, sort_order, description
 cook_sessions    — id, recipe_id, cooked_at, notes, cooked_by (michael|rachel, nullable),
@@ -98,10 +101,13 @@ cook_sessions    — id, recipe_id, cooked_at, notes, cooked_by (michael|rachel,
 photos           — id, cook_session_id, file_path, uploaded_at, uploaded_by (michael|rachel, nullable)
 ratings          — id, cook_session_id, user (michael|rachel), stars (1–5, 0.5 steps), rated_at
                    UNIQUE(cook_session_id, user)
-meal_plan        — id, week_start, day (mon–sun), recipe_id, locked
+meal_plan        — id, week_start, day (mon–sun), recipe_id, locked, freezer_item_id (nullable FK)
                    UNIQUE(week_start, day)
 meal_plan_sides  — id, week_start, day (mon–sun), recipe_id
                    UNIQUE(week_start, day, recipe_id) — multiple side dishes per day
+freezer_items    — id, recipe_id (CASCADE), cook_session_id (nullable, SET NULL), portions_total,
+                   portions_remaining, frozen_at, expires_at (both bare ISO dates), added_by
+                   (michael|rachel, nullable), created_at
 ```
 
 Note: `ratings.stars` is still declared `INTEGER` in SQLite but stores half-star values fine —
@@ -115,7 +121,7 @@ migration was needed; validation (must be a multiple of 0.5) happens in `RatingI
 
 | Method | Path                          | Description                        |
 |--------|-------------------------------|------------------------------------|
-| GET    | /recipes/                     | List recipes (filterable: vegetarian, vegan, difficulty, cuisine, side_dish, baking) |
+| GET    | /recipes/                     | List recipes (filterable: vegetarian, vegan, difficulty, cuisine, side_dish, baking, freezable) |
 | POST   | /recipes/                     | Create recipe                      |
 | GET    | /recipes/{id}                 | Get recipe with ingredients+steps  |
 | PUT    | /recipes/{id}                 | Update recipe                      |
@@ -130,17 +136,22 @@ migration was needed; validation (must be a multiple of 0.5) happens in `RatingI
 | POST   | /sessions/{id}/finish         | Mark cooking mode finished (unblocks the review gate) |
 | POST   | /sessions/{id}/rate           | Rate a session                     |
 | DELETE | /sessions/{id}/rate/{user}    | Remove a user's rating for a session |
-| GET    | /sessions/pending/{user}      | Sessions `user` still owes a review for |
+| GET    | /sessions/pending/{user}      | Sessions `user` still owes a review for (each entry now also carries the recipe's `is_freezable`/`portions`, used by `ReviewGate`'s freezer step) |
 | POST   | /sessions/{id}/photo          | Upload photo for a session (`uploaded_by` required) |
 | DELETE | /sessions/{id}/photo/{photo_id} | Delete a photo (row + file)      |
-| GET    | /plan/{week_start}            | Get week plan (ISO date Monday), each day includes `sides` |
-| POST   | /plan/suggest/{week_start}    | Generate suggestions (excludes side/baking recipes) |
-| PUT    | /plan/{week_start}/{day}      | Set a day's main recipe (400 if it's a side/baking recipe) |
+| GET    | /plan/{week_start}            | Get week plan (ISO date Monday), each day includes `sides` and, if `freezer_item_id` is set, a `freezer` object (`portions_remaining`/`portions_total`/`expires_at`) |
+| POST   | /plan/suggest/{week_start}    | Generate suggestions (excludes side/baking recipes); freezer batches within 14 days of THT are boosted ahead of normal scoring, tagged `from_freezer`/`freezer_item_id`/`portions_remaining` |
+| PUT    | /plan/{week_start}/{day}      | Set a day's main recipe (400 if it's a side/baking recipe); body may include `freezer_item_id` to link the day to a freezer batch |
 | DELETE | /plan/{week_start}/{day}      | Clear a day (also clears its side dishes) |
 | POST   | /plan/{week_start}/{day}/sides | Attach a side dish to a day       |
 | DELETE | /plan/{week_start}/{day}/sides/{recipe_id} | Remove a side dish from a day |
 | POST   | /plan/grocery                 | Aggregate grocery list for week (mains + sides, excludes past days) |
 | POST   | /import/                      | Import recipe from URL via AI      |
+| GET    | /freezer/                     | List freezer stock, soonest-expiry first |
+| POST   | /freezer/                     | Add a freezer batch (`recipe_id`, `portions_total`; `frozen_at`/`expires_at` default to today / recipe's `freezer_months`-or-3-month THT, both overridable) |
+| POST   | /freezer/{id}/consume          | Decrement `portions_remaining`; hitting 0 deletes the row (204) |
+| POST   | /freezer/{id}/expires          | Manually correct a batch's THT     |
+| DELETE | /freezer/{id}                 | Remove a freezer batch entirely    |
 | GET    | /health                       | Health check + running git short-hash (`version`) |
 
 ---
@@ -153,14 +164,14 @@ cd backend
 venv\Scripts\pytest -q      # Windows
 venv/bin/pytest -q          # Linux/Pi
 ```
-Covers recipe/session/planner CRUD, the pending-review gate queue logic (including the cooking-mode vs legacy-session distinction), meal-plan scoring/cooldown/grocery aggregation, side-dish/baking category rules, cooking-mode step/timer/finish/active-session endpoints, half-star rating validation, review/photo edit-delete, mocked AI-import error paths (no real network/Anthropic calls), and a direct regression test for the `check_same_thread` fix. 67 tests as of the cooking-mode branch merge.
+Covers recipe/session/planner CRUD, the pending-review gate queue logic (including the cooking-mode vs legacy-session distinction), meal-plan scoring/cooldown/grocery aggregation, side-dish/baking category rules, cooking-mode step/timer/finish/active-session endpoints, half-star rating validation, review/photo edit-delete, mocked AI-import error paths (no real network/Anthropic calls), a direct regression test for the `check_same_thread` fix, and the freezer inventory (CRUD, THT defaulting/override, partial-consume/consume-to-zero, cascade/SET-NULL delete semantics, suggestion-boost windowing, and a migration regression test for the first-ever FK column added via `ALTER TABLE ADD COLUMN`). 93 tests as of the freezer-inventory feature.
 
 **Frontend** — Vitest + Testing Library:
 ```bash
 cd frontend
 npm test
 ```
-Covers `ReviewGate`'s modal/queue behavior, the `api.js`/`user.js` helpers, half-star `StarRating` click/render behavior, `PhotoUploader`, `ActiveSessionBanner` polling, `CookingMode`'s step navigation/timer/wake-lock, `RecipeDetail`'s rating/photo edit-delete affordances, `RecipeList`'s baking filter, and `Planner`'s past-day dimming, side-dish flow, and share-button feedback. 55 tests as of the cooking-mode branch merge. Pinned to `vitest@^2.1.9` + `jsdom@^25` — `vitest@4`'s bundled `vite@8`/rolldown dependency failed to install (native binding + Node-version mismatch) on this project's Windows dev machine; re-evaluate before upgrading, especially on the Pi's ARM64 Linux.
+Covers `ReviewGate`'s modal/queue behavior (including its two-phase rating→freezer flow), the `api.js`/`user.js` helpers, half-star `StarRating` click/render behavior, `PhotoUploader`, `ActiveSessionBanner` polling, `CookingMode`'s step navigation/timer/wake-lock, `RecipeDetail`'s rating/photo edit-delete affordances, `RecipeList`'s baking filter, `RecipeForm`'s freezer field coercion/prefill, `Vriezer`'s THT color thresholds and consume/add flows, and `Planner`'s past-day dimming, side-dish flow, share-button feedback, and freezer suggestion/badge/consume flow. 76 tests as of the freezer-inventory feature. Pinned to `vitest@^2.1.9` + `jsdom@^25` — `vitest@4`'s bundled `vite@8`/rolldown dependency failed to install (native binding + Node-version mismatch) on this project's Windows dev machine; re-evaluate before upgrading, especially on the Pi's ARM64 Linux.
 
 ---
 
@@ -183,6 +194,9 @@ Covers `ReviewGate`'s modal/queue behavior, the `api.js`/`user.js` helpers, half
 - **Side dishes & baking categories**: `recipes.is_side_dish` / `is_baking` (booleans, same pattern as `is_vegetarian`/`is_vegan`) exclude a recipe from weekly suggestions and from being picked as a day's *main* dish (`PUT /plan/{week_start}/{day}` returns 400 otherwise). Side dishes attach to a day via a separate `meal_plan_sides` table (many per day, unlike the single nullable `recipe_id` on `meal_plan`) through a dedicated picker restricted to `is_side_dish` recipes; baking is browse/filter-only with no day-attachment. The grocery list merges side-dish ingredients into the same flat `by_recipe` dict as mains.
 - **Review/photo editing**: ratings and photos can now be edited/deleted, but only from the owning identity's own device — there's no auth layer anywhere in this app, so this is UI-only gating (`RecipeDetail.jsx` checks `r.user === getUser()` / `photo.uploaded_by === getUser()`), same trust model as everything else. `photos.uploaded_by` is nullable since historical photos predate this column and have no known uploader.
 - **Past planner days**: `Planner.jsx` dims any day whose calendar date is before today and hides its edit affordances (lock/clear/pick), but keeps the assigned recipe name visible as a read-only record. `POST /plan/grocery` independently excludes past days' ingredients server-side (`planner.py::_today()`, wrapped for test freezing via monkeypatch).
+- **Freezer inventory** (`freezer.py`, `Vriezer.jsx`, route `/vriezer`, not a bottom-nav tab — reached via a button on `Planner.jsx`): tracks THT (houdbaar tot) per frozen batch. The prompt ("nog over voor de vriezer?") fires as a *second phase* of `ReviewGate`'s modal, right after the star rating, for any `is_freezable` recipe — deliberately not at cooking-mode finish, since the *reviewer* (not necessarily the cook) logs it; a manual "+ Voeg toe" on `/vriezer` covers everything else. THT defaults to `frozen_at` + `recipe.freezer_months` (or a global 3 months), always overridable per batch. `portions_remaining` is tracked separately from `portions_total` so a batch can be partially used across several days; hitting 0 deletes the row (`ON DELETE SET NULL` on `meal_plan.freezer_item_id` then detaches any linked day's badge without deleting the day). `planner.py`'s `suggest_week` runs a **separate priority pass** ahead of `_score_recipes` (not blended into it — freezer boosting answers "eat existing leftovers", not "should I cook this again", and bypasses the cooldown penalty entirely) for batches within `FREEZER_BOOST_WINDOW_DAYS = 14` of `expires_at`, rendered as a light-blue ❄️ suggestion chip distinct from the normal green ✨ one.
+- **Bottom-sheet modals need `z-[60]`, not `z-50`, or the fixed `Nav` bar swallows clicks near the sheet's bottom edge.** `Nav` is `z-50` and renders *after* `<Routes>` in `App.jsx`, so at equal z-index it wins stacking ties for any `items-end` sheet whose content reaches the bottom of the viewport — `ReviewGate.jsx` already knew this (`z-[100]`), but it's easy to forget for a new one-off modal added to a page. Not catchable by vitest (jsdom doesn't do real hit-testing/`elementFromPoint`) — only shows up as an unresponsive button in a real browser.
+- **`GET /plan/{week_start}` returns raw SQLite rows, so `locked` is `0`/`1` (int), not a JS boolean.** `{entry?.locked && <SomeIcon/>}`-style conditional rendering will print a literal `0` in the DOM for an unlocked day (React only suppresses `false`/`null`/`undefined`, not `0`) — wrap in `Boolean(...)` (or use a ternary) at any new render site that branches on `entry.locked`.
 
 ---
 
