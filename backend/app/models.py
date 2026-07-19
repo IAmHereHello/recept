@@ -176,3 +176,13 @@ class FreezerConsumeIn(BaseModel):
 
 class FreezerExpiresIn(BaseModel):
     expires_at: str
+
+
+class DashboardStatusOut(BaseModel):
+    cooking_active: bool
+    cooking_recipe_id: int = 0
+    cooking_recipe_name: str = ""
+    cook_time_remaining_seconds: int = 0
+    planned_today_recipe_id: int = 0
+    planned_today_recipe_name: str = ""
+    updated_at: str
