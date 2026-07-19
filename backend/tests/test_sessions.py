@@ -1,5 +1,15 @@
 import io
+import sqlite3
+from datetime import datetime, timedelta, timezone
 from tests.conftest import make_recipe
+
+
+def _set_session_fields(db_path, session_id, **fields):
+    conn = sqlite3.connect(db_path)
+    assignments = ", ".join(f"{k}=?" for k in fields)
+    conn.execute(f"UPDATE cook_sessions SET {assignments} WHERE id=?", (*fields.values(), session_id))
+    conn.commit()
+    conn.close()
 
 
 def test_create_session_and_rate(client):
@@ -259,3 +269,122 @@ def test_delete_rating_then_recipe_avg_rating_recalculates(client):
 
     recipe_after = client.get(f"/recipes/{recipe['id']}").json()
     assert recipe_after["avg_rating"] == 2.0
+
+
+def test_fresh_cooking_session_is_not_stale(client):
+    recipe = make_recipe(client)
+    session = client.post(
+        "/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael", "cooking_mode": True}
+    ).json()
+
+    assert session["is_stale"] is False
+    assert client.get("/sessions/active").json()["is_stale"] is False
+
+
+def test_session_becomes_stale_after_inactivity_timeout(client, tmp_path):
+    recipe = make_recipe(client)
+    session = client.post(
+        "/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael", "cooking_mode": True}
+    ).json()
+
+    long_ago = (datetime.now(timezone.utc) - timedelta(minutes=61)).isoformat()
+    _set_session_fields(tmp_path / "test.db", session["id"], last_activity_at=long_ago)
+
+    assert client.get(f"/sessions/{session['id']}").json()["is_stale"] is True
+    assert client.get("/sessions/active").json()["is_stale"] is True
+
+
+def test_running_timer_prevents_staleness_during_countdown(client, tmp_path):
+    recipe = make_recipe(client)
+    session = client.post(
+        "/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael", "cooking_mode": True}
+    ).json()
+
+    # last_activity_at alone (90 min ago) would be stale, but a 3-hour timer
+    # that also started 90 min ago hasn't ended yet — its future end time
+    # should keep the session fresh while it counts down.
+    started_90_min_ago = (datetime.now(timezone.utc) - timedelta(minutes=90)).isoformat()
+    _set_session_fields(
+        tmp_path / "test.db", session["id"],
+        last_activity_at=started_90_min_ago, timer_started_at=started_90_min_ago, timer_seconds=3 * 60 * 60,
+    )
+
+    assert client.get(f"/sessions/{session['id']}").json()["is_stale"] is False
+
+
+def test_session_stale_once_a_finished_timer_itself_is_old_enough(client, tmp_path):
+    recipe = make_recipe(client)
+    session = client.post(
+        "/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael", "cooking_mode": True}
+    ).json()
+
+    # A 1-hour timer started 200 min ago ended 140 min ago — well past the
+    # 60-minute threshold, even though last_activity_at was also 200 min ago.
+    started_200_min_ago = (datetime.now(timezone.utc) - timedelta(minutes=200)).isoformat()
+    _set_session_fields(
+        tmp_path / "test.db", session["id"],
+        last_activity_at=started_200_min_ago, timer_started_at=started_200_min_ago, timer_seconds=60 * 60,
+    )
+
+    assert client.get(f"/sessions/{session['id']}").json()["is_stale"] is True
+
+
+def test_touch_updates_last_activity_and_keeps_session_fresh(client, tmp_path):
+    recipe = make_recipe(client)
+    session = client.post(
+        "/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael", "cooking_mode": True}
+    ).json()
+
+    long_ago = (datetime.now(timezone.utc) - timedelta(minutes=61)).isoformat()
+    _set_session_fields(tmp_path / "test.db", session["id"], last_activity_at=long_ago)
+    assert client.get(f"/sessions/{session['id']}").json()["is_stale"] is True
+
+    resp = client.post(f"/sessions/{session['id']}/touch")
+    assert resp.status_code == 204
+    assert client.get(f"/sessions/{session['id']}").json()["is_stale"] is False
+
+
+def test_touch_finished_session_rejected(client):
+    recipe = make_recipe(client)
+    session = client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael"}).json()
+
+    resp = client.post(f"/sessions/{session['id']}/touch")
+    assert resp.status_code == 400
+
+
+def test_delete_session_removes_unfinished_session(client):
+    recipe = make_recipe(client)
+    session = client.post(
+        "/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael", "cooking_mode": True}
+    ).json()
+
+    resp = client.delete(f"/sessions/{session['id']}")
+    assert resp.status_code == 204
+    assert client.get(f"/sessions/{session['id']}").status_code == 404
+
+
+def test_delete_session_rejects_already_finished_session(client):
+    recipe = make_recipe(client)
+    session = client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael"}).json()
+
+    resp = client.delete(f"/sessions/{session['id']}")
+    assert resp.status_code == 400
+    assert client.get(f"/sessions/{session['id']}").status_code == 200
+
+
+def test_advance_step_and_timer_actions_refresh_last_activity(client, tmp_path):
+    recipe = make_recipe(client)
+    session = client.post(
+        "/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael", "cooking_mode": True}
+    ).json()
+
+    long_ago = (datetime.now(timezone.utc) - timedelta(minutes=61)).isoformat()
+    _set_session_fields(tmp_path / "test.db", session["id"], last_activity_at=long_ago)
+    assert client.get(f"/sessions/{session['id']}").json()["is_stale"] is True
+
+    client.post(f"/sessions/{session['id']}/step", json={"step_index": 1})
+    assert client.get(f"/sessions/{session['id']}").json()["is_stale"] is False
+
+    _set_session_fields(tmp_path / "test.db", session["id"], last_activity_at=long_ago)
+    client.post(f"/sessions/{session['id']}/timer", json={"seconds": 60})
+    assert client.get(f"/sessions/{session['id']}").json()["is_stale"] is False

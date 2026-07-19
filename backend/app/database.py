@@ -163,5 +163,17 @@ def init_db():
     if "freezer_item_id" not in cols:
         conn.execute("ALTER TABLE meal_plan ADD COLUMN freezer_item_id INTEGER REFERENCES freezer_items(id) ON DELETE SET NULL")
 
+    # Migration: last_activity_at drives the "close an abandoned cooking
+    # session after inactivity" feature — updated on every step/timer action
+    # plus a frontend heartbeat while the cooking page is open and visible.
+    # Backfill only matters for rows still in progress (finished_at IS NULL);
+    # finished sessions never get staleness-checked, so leaving them NULL is fine.
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(cook_sessions)").fetchall()]
+    if "last_activity_at" not in cols:
+        conn.execute("ALTER TABLE cook_sessions ADD COLUMN last_activity_at TEXT")
+        conn.execute(
+            "UPDATE cook_sessions SET last_activity_at = COALESCE(step_started_at, cooked_at) WHERE finished_at IS NULL"
+        )
+
     conn.commit()
     conn.close()

@@ -89,6 +89,66 @@ def test_freezer_migration_adds_columns_to_pre_existing_db(tmp_path, monkeypatch
     database_module.init_db()
 
 
+def test_last_activity_migration_adds_column_and_backfills_in_progress_rows(tmp_path, monkeypatch):
+    """Regression test for the cooking-session inactivity feature: an existing
+    database (built before last_activity_at existed) must gain the column via
+    ALTER TABLE, with in-progress rows backfilled from step_started_at so
+    staleness can be computed immediately without a NULL reference. Finished
+    rows are intentionally left NULL since they're never staleness-checked.
+    """
+    db_path = tmp_path / "pre_last_activity.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE recipes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            is_vegetarian INTEGER NOT NULL DEFAULT 0,
+            is_vegan INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE cook_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+            cooked_at TEXT NOT NULL DEFAULT (datetime('now')),
+            notes TEXT,
+            cooked_by TEXT,
+            cooking_mode INTEGER NOT NULL DEFAULT 0,
+            current_step INTEGER NOT NULL DEFAULT 0,
+            step_started_at TEXT,
+            timer_seconds INTEGER,
+            timer_started_at TEXT,
+            finished_at TEXT
+        );
+    """)
+    conn.execute("INSERT INTO recipes (name) VALUES ('Oude Stamppot')")
+    conn.execute(
+        "INSERT INTO cook_sessions (recipe_id, cooked_at, cooking_mode, step_started_at, finished_at) "
+        "VALUES (1, '2026-01-01T10:00:00', 1, '2026-01-01T10:05:00', NULL)"
+    )
+    conn.execute(
+        "INSERT INTO cook_sessions (recipe_id, cooked_at, cooking_mode, finished_at) "
+        "VALUES (1, '2026-01-01T09:00:00', 0, '2026-01-01T09:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(database_module, "DB_PATH", db_path)
+    database_module.init_db()
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(cook_sessions)").fetchall()]
+    assert "last_activity_at" in cols
+
+    rows = {row["cooking_mode"]: row for row in conn.execute("SELECT * FROM cook_sessions").fetchall()}
+    assert rows[1]["last_activity_at"] == "2026-01-01T10:05:00"
+    assert rows[0]["last_activity_at"] is None
+    conn.close()
+
+    # Re-running init_db() must be idempotent (no errors on already-migrated schema).
+    database_module.init_db()
+
+
 def test_init_db_creates_freezer_items_table(tmp_path, monkeypatch):
     db_path = tmp_path / "fresh.db"
     monkeypatch.setattr(database_module, "DB_PATH", db_path)

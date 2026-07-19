@@ -84,6 +84,9 @@ class CookSessionOut(BaseModel):
     cooking_mode: bool
     current_step: int
     finished_at: Optional[str] = None
+    timer_seconds: Optional[int] = None
+    timer_started_at: Optional[str] = None
+    is_stale: bool = False
     ratings: List[dict] = []
     photos: List[PhotoOut] = []
 
@@ -105,6 +108,7 @@ class ActiveSessionOut(BaseModel):
     total_steps: int
     active_timer_remaining_seconds: Optional[int] = None
     estimated_remaining_seconds: Optional[int] = None
+    is_stale: bool = False
 
 
 class PendingReviewOut(BaseModel):

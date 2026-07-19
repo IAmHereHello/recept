@@ -47,6 +47,8 @@ export const api = {
   clearTimer: (sessionId) => req('DELETE', `/sessions/${sessionId}/timer`),
   finishCooking: (sessionId) => req('POST', `/sessions/${sessionId}/finish`),
   getActiveSession: () => req('GET', '/sessions/active'),
+  touchSession: (sessionId) => req('POST', `/sessions/${sessionId}/touch`),
+  deleteSession: (sessionId) => req('DELETE', `/sessions/${sessionId}`),
 
   // Planner
   getWeek: (weekStart) => req('GET', `/plan/${weekStart}`),

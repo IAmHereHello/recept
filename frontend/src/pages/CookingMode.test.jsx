@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { CookingMode } from './CookingMode'
@@ -15,6 +15,8 @@ vi.mock('../lib/api', () => ({
     clearTimer: vi.fn(),
     finishCooking: vi.fn(),
     uploadPhoto: vi.fn(),
+    touchSession: vi.fn(),
+    deleteSession: vi.fn(),
   },
 }))
 
@@ -59,6 +61,8 @@ describe('CookingMode', () => {
     api.startTimer.mockResolvedValue({})
     api.clearTimer.mockResolvedValue(null)
     api.finishCooking.mockResolvedValue({})
+    api.touchSession.mockResolvedValue(null)
+    api.deleteSession.mockResolvedValue(null)
   })
 
   it('renders the first step and requests a wake lock on mount', async () => {
@@ -149,6 +153,83 @@ describe('CookingMode', () => {
     api.getSession.mockResolvedValue({ id: 5, current_step: 0, finished_at: '2026-01-01T00:00:00' })
     renderCookingMode()
 
+    expect(await screen.findByText('Recipe detail page')).toBeInTheDocument()
+
+    vi.unstubAllGlobals()
+  })
+
+  it('restores an in-progress timer from the session on mount', async () => {
+    stubWakeLock()
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T12:00:00.000Z'))
+    const startedAt = new Date(Date.now() - 30000).toISOString() // started 30s ago
+    api.getSession.mockResolvedValue({
+      id: 5, current_step: 0, finished_at: null, is_stale: false,
+      timer_seconds: 60, timer_started_at: startedAt,
+    })
+
+    await act(async () => { renderCookingMode() })
+
+    expect(screen.getByText('0:30')).toBeInTheDocument()
+    expect(api.clearTimer).not.toHaveBeenCalled()
+
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('clears an already-elapsed timer instead of restoring it', async () => {
+    stubWakeLock()
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T12:00:00.000Z'))
+    const startedAt = new Date(Date.now() - 120000).toISOString() // 60s timer started 2 min ago
+    api.getSession.mockResolvedValue({
+      id: 5, current_step: 0, finished_at: null, is_stale: false,
+      timer_seconds: 60, timer_started_at: startedAt,
+    })
+
+    await act(async () => { renderCookingMode() })
+
+    expect(screen.queryByText(/^\d+:\d{2}$/)).not.toBeInTheDocument()
+    expect(api.clearTimer).toHaveBeenCalledWith(5)
+
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('shows a restart dialog for a stale session and resumes on confirm', async () => {
+    stubWakeLock()
+    const user = userEvent.setup()
+    api.getSession.mockResolvedValueOnce({
+      id: 5, current_step: 1, finished_at: null, is_stale: true,
+      timer_seconds: null, timer_started_at: null,
+    })
+    renderCookingMode()
+
+    await screen.findByText('Kooksessie hervatten?')
+    expect(screen.queryByText('Stap 2 van 2')).not.toBeInTheDocument()
+
+    api.getSession.mockResolvedValueOnce({
+      id: 5, current_step: 1, finished_at: null, is_stale: false,
+      timer_seconds: null, timer_started_at: null,
+    })
+    await user.click(screen.getByText('Ja, doorgaan'))
+
+    expect(api.touchSession).toHaveBeenCalledWith(5)
+    await screen.findByText('Stap 2 van 2')
+
+    vi.unstubAllGlobals()
+  })
+
+  it('deletes the session and navigates away when ending a stale session', async () => {
+    stubWakeLock()
+    const user = userEvent.setup()
+    api.getSession.mockResolvedValue({ id: 5, current_step: 0, finished_at: null, is_stale: true })
+    renderCookingMode()
+
+    await screen.findByText('Kooksessie hervatten?')
+    await user.click(screen.getByText('Nee, beëindig'))
+
+    expect(api.deleteSession).toHaveBeenCalledWith(5)
     expect(await screen.findByText('Recipe detail page')).toBeInTheDocument()
 
     vi.unstubAllGlobals()

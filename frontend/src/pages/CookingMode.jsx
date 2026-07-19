@@ -18,20 +18,7 @@ function formatTime(totalSeconds) {
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
-function playBeep() {
-  try {
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext
-    const ctx = new AudioContextClass()
-    const osc = ctx.createOscillator()
-    osc.type = 'sine'
-    osc.frequency.value = 880
-    osc.connect(ctx.destination)
-    osc.start()
-    osc.stop(ctx.currentTime + 0.5)
-  } catch {
-    // Web Audio unavailable — skip the alert sound rather than crash.
-  }
-}
+const HEARTBEAT_INTERVAL_MS = 60000
 
 export function CookingMode() {
   const { id } = useParams()
@@ -45,8 +32,26 @@ export function CookingMode() {
   const [timerEndAt, setTimerEndAt] = useState(null)
   const [remaining, setRemaining] = useState(0)
   const [timerDone, setTimerDone] = useState(false)
+  const [showStaleDialog, setShowStaleDialog] = useState(false)
   const wakeLockRef = useRef(null)
+  const audioCtxRef = useRef(null)
   const me = getUser()
+
+  function restoreTimerFromSession(session) {
+    if (session.timer_seconds == null || session.timer_started_at == null) return
+    const startedMs = new Date(session.timer_started_at).getTime()
+    const remainingMs = session.timer_seconds * 1000 - (Date.now() - startedMs)
+    if (remainingMs > 0) {
+      setTimerEndAt(Date.now() + remainingMs)
+      setRemaining(Math.round(remainingMs / 1000))
+      setTimerDone(false)
+    } else {
+      // Timer fully elapsed while we were away — clear it rather than show a
+      // stuck "done" state for however long ago it actually finished.
+      resetLocalTimer()
+      api.clearTimer(sessionId).catch(() => {})
+    }
+  }
 
   useEffect(() => {
     Promise.all([api.getRecipe(id), api.getSession(sessionId)]).then(([r, session]) => {
@@ -56,9 +61,86 @@ export function CookingMode() {
         return
       }
       setStepIndex(session.current_step || 0)
+      if (session.is_stale) {
+        setShowStaleDialog(true)
+      } else {
+        restoreTimerFromSession(session)
+      }
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, sessionId])
+
+  // Heartbeat while this page is open and visible, so reading a step for a
+  // while without pressing anything doesn't get treated as having walked away.
+  useEffect(() => {
+    if (showStaleDialog) return
+    function ping() {
+      if (document.visibilityState === 'visible') {
+        api.touchSession(sessionId).catch(() => {})
+      }
+    }
+    const interval = setInterval(ping, HEARTBEAT_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [sessionId, showStaleDialog])
+
+  // Unlock audio playback on the first tap anywhere on the page — creating/
+  // resuming the AudioContext requires a user gesture, and the alarm later
+  // fires from a setInterval callback with no gesture of its own.
+  useEffect(() => {
+    function unlock() { getAudioContext() }
+    document.addEventListener('pointerdown', unlock, { once: true })
+    return () => document.removeEventListener('pointerdown', unlock)
+  }, [])
+
+  useEffect(() => {
+    return () => audioCtxRef.current?.close?.()
+  }, [])
+
+  function getAudioContext() {
+    if (!audioCtxRef.current) {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext
+      if (!AudioContextClass) return null
+      audioCtxRef.current = new AudioContextClass()
+    }
+    if (audioCtxRef.current.state === 'suspended') {
+      audioCtxRef.current.resume().catch(() => {})
+    }
+    return audioCtxRef.current
+  }
+
+  function playAlarm() {
+    try {
+      const ctx = getAudioContext()
+      if (!ctx) return
+      for (let i = 0; i < 3; i++) {
+        const start = ctx.currentTime + i * 0.35
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.type = 'sine'
+        osc.frequency.value = 880
+        gain.gain.setValueAtTime(0.0001, start)
+        gain.gain.exponentialRampToValueAtTime(0.5, start + 0.02)
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.25)
+        osc.connect(gain)
+        gain.connect(ctx.destination)
+        osc.start(start)
+        osc.stop(start + 0.3)
+      }
+    } catch {
+      // Web Audio unavailable — skip the alert sound rather than crash.
+    }
+  }
+
+  async function resumeStaleSession() {
+    const session = await api.touchSession(sessionId).then(() => api.getSession(sessionId))
+    restoreTimerFromSession(session)
+    setShowStaleDialog(false)
+  }
+
+  async function endStaleSession() {
+    await api.deleteSession(sessionId)
+    navigate(`/recipes/${id}`, { replace: true })
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -92,7 +174,7 @@ export function CookingMode() {
         setTimerDone(true)
         clearInterval(interval)
         navigator.vibrate?.(500)
-        playBeep()
+        playAlarm()
       }
     }, 250)
     return () => clearInterval(interval)
@@ -105,6 +187,7 @@ export function CookingMode() {
   }
 
   async function startTimer(minutes) {
+    getAudioContext() // warm/resume on this click so the later alarm can play unattended
     const seconds = minutes * 60
     await api.startTimer(sessionId, seconds)
     setTimerEndAt(Date.now() + seconds * 1000)
@@ -142,6 +225,33 @@ export function CookingMode() {
   }
 
   if (!recipe) return <div className="p-6 text-center text-gray-400">Laden...</div>
+
+  if (showStaleDialog) {
+    return (
+      <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl p-6 w-full max-w-sm">
+          <h2 className="text-lg font-bold text-gray-900 mb-2">Kooksessie hervatten?</h2>
+          <p className="text-sm text-gray-600 mb-6">
+            Je kookte {recipe.name} maar was een tijdje afwezig. Wil je doorgaan waar je gebleven was?
+          </p>
+          <div className="flex gap-3">
+            <button
+              onClick={endStaleSession}
+              className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-50 transition"
+            >
+              Nee, beëindig
+            </button>
+            <button
+              onClick={resumeStaleSession}
+              className="flex-1 bg-green-600 text-white py-2.5 rounded-xl text-sm font-medium hover:bg-green-700 transition"
+            >
+              Ja, doorgaan
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   if (phase === 'finish') {
     return (

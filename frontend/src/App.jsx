@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { Nav } from './components/Nav'
 import { ReviewGate } from './components/ReviewGate'
 import { ActiveSessionBanner } from './components/ActiveSessionBanner'
+import { CookingSessionRejoin } from './components/CookingSessionRejoin'
 import { Home } from './pages/Home'
 import { RecipeList } from './pages/RecipeList'
 import { RecipeDetail } from './pages/RecipeDetail'
@@ -28,6 +29,7 @@ export default function App() {
       <Nav />
       <ReviewGate />
       <ActiveSessionBanner />
+      <CookingSessionRejoin />
     </BrowserRouter>
   )
 }

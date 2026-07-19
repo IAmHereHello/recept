@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlite3 import Connection
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import aiofiles
 import uuid
@@ -17,9 +17,32 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.heic'}
 
+# A session is considered abandoned once it's been this long since the cook
+# last interacted with it — but a running timer's own end time counts as
+# activity too, so waiting out a long bake never gets flagged mid-countdown
+# (see _is_stale).
+INACTIVITY_TIMEOUT_SECONDS = 60 * 60
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_aware(value: str) -> datetime:
+    dt = datetime.fromisoformat(value)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _is_stale(row: dict, now: datetime) -> bool:
+    if row["finished_at"] is not None:
+        return False
+    reference_raw = row["last_activity_at"] or row["step_started_at"] or row["cooked_at"]
+    reference = _parse_aware(reference_raw)
+    if row["timer_seconds"] is not None and row["timer_started_at"] is not None:
+        timer_end = _parse_aware(row["timer_started_at"]) + timedelta(seconds=row["timer_seconds"])
+        if timer_end > reference:
+            reference = timer_end
+    return (now - reference).total_seconds() > INACTIVITY_TIMEOUT_SECONDS
 
 
 def _fetch_session(conn: Connection, session_id: int) -> dict:
@@ -27,6 +50,7 @@ def _fetch_session(conn: Connection, session_id: int) -> dict:
     if not row:
         raise HTTPException(404, "Session not found")
     s = dict(row)
+    s["is_stale"] = _is_stale(s, datetime.now(timezone.utc))
     s["ratings"] = [dict(r) for r in conn.execute(
         "SELECT * FROM ratings WHERE cook_session_id = ?", (session_id,)
     ).fetchall()]
@@ -53,9 +77,9 @@ def create_session(body: CookSessionIn, conn: Connection = Depends(get_db)):
     finished_at = None if body.cooking_mode else cooked_at
     cur = conn.execute(
         """INSERT INTO cook_sessions
-           (recipe_id, cooked_at, notes, cooked_by, cooking_mode, current_step, step_started_at, finished_at)
-           VALUES (?,?,?,?,?,?,?,?)""",
-        (body.recipe_id, cooked_at, body.notes, body.cooked_by, int(body.cooking_mode), 0, step_started_at, finished_at)
+           (recipe_id, cooked_at, notes, cooked_by, cooking_mode, current_step, step_started_at, finished_at, last_activity_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (body.recipe_id, cooked_at, body.notes, body.cooked_by, int(body.cooking_mode), 0, step_started_at, finished_at, step_started_at)
     )
     conn.commit()
     return _fetch_session(conn, cur.lastrowid)
@@ -68,7 +92,9 @@ def active_session(conn: Connection = Depends(get_db)):
     # only the latest one is surfaced.
     row = conn.execute(
         """SELECT cs.id, cs.recipe_id, cs.cooked_by, cs.current_step,
-                  cs.timer_seconds, cs.timer_started_at, r.name AS recipe_name, r.cook_time
+                  cs.timer_seconds, cs.timer_started_at, cs.step_started_at,
+                  cs.cooked_at, cs.finished_at, cs.last_activity_at,
+                  r.name AS recipe_name, r.cook_time
            FROM cook_sessions cs
            JOIN recipes r ON r.id = cs.recipe_id
            WHERE cs.cooking_mode = 1 AND cs.finished_at IS NULL
@@ -76,6 +102,7 @@ def active_session(conn: Connection = Depends(get_db)):
     ).fetchone()
     if not row:
         return None
+    row = dict(row)
 
     total_steps = conn.execute(
         "SELECT COUNT(*) as c FROM steps WHERE recipe_id = ?", (row["recipe_id"],)
@@ -103,6 +130,7 @@ def active_session(conn: Connection = Depends(get_db)):
         "total_steps": total_steps,
         "active_timer_remaining_seconds": active_timer_remaining,
         "estimated_remaining_seconds": estimated_remaining,
+        "is_stale": _is_stale(row, datetime.now(timezone.utc)),
     }
 
 
@@ -116,10 +144,11 @@ def advance_step(session_id: int, body: StepAdvanceIn, conn: Connection = Depend
     ).fetchone()["c"]
     if not (0 <= body.step_index < total_steps):
         raise HTTPException(400, "step_index out of range")
+    now = _now()
     conn.execute(
-        """UPDATE cook_sessions SET current_step=?, step_started_at=?, timer_seconds=NULL, timer_started_at=NULL
+        """UPDATE cook_sessions SET current_step=?, step_started_at=?, timer_seconds=NULL, timer_started_at=NULL, last_activity_at=?
            WHERE id=?""",
-        (body.step_index, _now(), session_id)
+        (body.step_index, now, now, session_id)
     )
     conn.commit()
     return _fetch_session(conn, session_id)
@@ -128,9 +157,10 @@ def advance_step(session_id: int, body: StepAdvanceIn, conn: Connection = Depend
 @router.post("/{session_id}/timer", response_model=CookSessionOut)
 def start_timer(session_id: int, body: TimerStartIn, conn: Connection = Depends(get_db)):
     _fetch_session(conn, session_id)
+    now = _now()
     conn.execute(
-        "UPDATE cook_sessions SET timer_seconds=?, timer_started_at=? WHERE id=?",
-        (body.seconds, _now(), session_id)
+        "UPDATE cook_sessions SET timer_seconds=?, timer_started_at=?, last_activity_at=? WHERE id=?",
+        (body.seconds, now, now, session_id)
     )
     conn.commit()
     return _fetch_session(conn, session_id)
@@ -140,9 +170,33 @@ def start_timer(session_id: int, body: TimerStartIn, conn: Connection = Depends(
 def clear_timer(session_id: int, conn: Connection = Depends(get_db)):
     _fetch_session(conn, session_id)
     conn.execute(
-        "UPDATE cook_sessions SET timer_seconds=NULL, timer_started_at=NULL WHERE id=?",
-        (session_id,)
+        "UPDATE cook_sessions SET timer_seconds=NULL, timer_started_at=NULL, last_activity_at=? WHERE id=?",
+        (_now(), session_id)
     )
+    conn.commit()
+
+
+@router.post("/{session_id}/touch", status_code=204)
+def touch_session(session_id: int, conn: Connection = Depends(get_db)):
+    # Lightweight heartbeat pinged by the frontend while the cooking page is
+    # open and visible, so reading a step for a while without pressing
+    # anything doesn't get mistaken for having walked away.
+    session = _fetch_session(conn, session_id)
+    if session["finished_at"] is not None:
+        raise HTTPException(400, "Cooking session is already finished")
+    conn.execute("UPDATE cook_sessions SET last_activity_at=? WHERE id=?", (_now(), session_id))
+    conn.commit()
+
+
+@router.delete("/{session_id}", status_code=204)
+def delete_session(session_id: int, conn: Connection = Depends(get_db)):
+    # Only for abandoning an in-progress session (e.g. from the "restart
+    # cooking session?" dialog after prolonged inactivity) — finished sessions
+    # carry review/photo/freezer history and must never be deletable this way.
+    session = _fetch_session(conn, session_id)
+    if session["finished_at"] is not None:
+        raise HTTPException(400, "Cannot delete a finished cooking session")
+    conn.execute("DELETE FROM cook_sessions WHERE id=?", (session_id,))
     conn.commit()
 
 
