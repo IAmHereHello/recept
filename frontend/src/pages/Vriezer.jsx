@@ -113,7 +113,7 @@ export function Vriezer() {
     : []
 
   return (
-    <div className="p-4 pb-28 max-w-lg mx-auto">
+    <div className="w-full p-4 pb-28 max-w-lg mx-auto">
       <div className="flex items-center justify-between mt-4 mb-6">
         <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
           <Snowflake size={22} className="text-sky-600" /> Vriezer

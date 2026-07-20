@@ -5,7 +5,7 @@ import { getUser } from '../lib/user'
 import { StarRating } from '../components/StarRating'
 import { Badge } from '../components/Badge'
 import {
-  Clock, ChefHat, Pencil, Trash2, Play, X
+  Clock, ChefHat, Pencil, Trash2, Play, X, Users, Search
 } from 'lucide-react'
 
 const DIFF_LABELS = { easy: 'Makkelijk', medium: 'Gemiddeld', hard: 'Moeilijk' }
@@ -18,6 +18,10 @@ export function RecipeDetail() {
   const [loading, setLoading] = useState(true)
   const [editingRatingKey, setEditingRatingKey] = useState(null) // `${sessionId}:${user}`
   const [editingStars, setEditingStars] = useState(0)
+  const [showPairPicker, setShowPairPicker] = useState(false)
+  const [pairSearch, setPairSearch] = useState('')
+  const [pairCandidates, setPairCandidates] = useState([])
+  const [pairError, setPairError] = useState('')
   const me = getUser()
 
   const load = useCallback(() => Promise.all([
@@ -30,6 +34,29 @@ export function RecipeDetail() {
   async function startCooking() {
     const session = await api.createSession({ recipe_id: Number(id), cooked_by: me, cooking_mode: true })
     navigate(`/recipes/${id}/cook?session=${session.id}`)
+  }
+
+  async function openPairPicker() {
+    setPairError('')
+    setPairSearch('')
+    setShowPairPicker(true)
+    if (pairCandidates.length === 0) {
+      const all = await api.getRecipes()
+      setPairCandidates(all.filter(r =>
+        r.id !== Number(id) && (r.steps || []).some(s => s.track !== 'meanwhile')
+      ))
+    }
+  }
+
+  async function startCookingWithPair(otherRecipe) {
+    setPairError('')
+    try {
+      const group = await api.createSessionGroup([Number(id), otherRecipe.id], me)
+      const mySession = group.sessions.find(s => s.recipe_id === Number(id)) || group.sessions[0]
+      navigate(`/recipes/${id}/cook?session=${mySession.id}`)
+    } catch (e) {
+      setPairError(e.message)
+    }
   }
 
   function startEditRating(sessionId, rating) {
@@ -69,9 +96,14 @@ export function RecipeDetail() {
   if (!recipe) return <div className="p-6 text-center text-gray-400">Niet gevonden.</div>
 
   const latestSession = sessions[0]
+  const mainSteps = (recipe.steps || []).filter(s => s.track !== 'meanwhile')
+  const meanwhileSteps = (recipe.steps || []).filter(s => s.track === 'meanwhile')
+  const filteredPairCandidates = pairCandidates.filter(r =>
+    r.name.toLowerCase().includes(pairSearch.toLowerCase())
+  )
 
   return (
-    <div className="pb-24 max-w-lg mx-auto">
+    <div className="w-full pb-24 max-w-lg mx-auto">
       {recipe.cover_photo ? (
         <div className="relative h-56 bg-gray-100">
           <img src={recipe.cover_photo} alt={recipe.name} className="w-full h-full object-cover" />
@@ -134,32 +166,60 @@ export function RecipeDetail() {
           </section>
         )}
 
-        {recipe.steps?.length > 0 && (
+        {mainSteps.length > 0 && (
           <section className="mb-6">
             <h2 className="text-base font-semibold text-gray-900 mb-3">Bereiding</h2>
             <ol className="space-y-3">
-              {recipe.steps.map((step, i) => (
-                <li key={step.id} className="flex gap-3">
+              {mainSteps.map((step, i) => (
+                <li key={i} className="flex gap-3">
                   <span className="shrink-0 w-6 h-6 rounded-full bg-green-100 text-green-700 text-xs font-bold flex items-center justify-center mt-0.5">
                     {i + 1}
                   </span>
-                  <span className="text-sm text-gray-700">{step.description}</span>
+                  <div className="text-sm text-gray-700">
+                    {step.description}
+                    {step.wait_time_minutes && (
+                      <span className="ml-2 text-xs text-amber-600">({step.wait_time_minutes} min wachten)</span>
+                    )}
+                  </div>
                 </li>
               ))}
             </ol>
           </section>
         )}
 
+        {meanwhileSteps.length > 0 && (
+          <section className="mb-6">
+            <h2 className="text-base font-semibold text-gray-900 mb-3">Ondertussen</h2>
+            <ul className="space-y-2">
+              {meanwhileSteps.map((step, i) => (
+                <li key={i} className="flex gap-2 items-start text-sm text-gray-700">
+                  <span className="shrink-0 mt-1.5 w-1.5 h-1.5 rounded-full bg-sky-400" />
+                  {step.description}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
         <div className="border-t border-gray-100 pt-6">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-4 gap-2">
             <h2 className="text-base font-semibold text-gray-900">Kooksessies</h2>
-            <button
-              onClick={startCooking}
-              disabled={!recipe.steps?.length}
-              className="flex items-center gap-1.5 bg-green-600 text-white px-3 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition"
-            >
-              <Play size={14} /> Start koken
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={openPairPicker}
+                disabled={!mainSteps.length}
+                className="flex items-center gap-1.5 border border-gray-200 text-gray-600 px-3 py-2 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50 transition"
+              >
+                <Users size={14} /> Kook samen met...
+              </button>
+              <button
+                onClick={startCooking}
+                disabled={!mainSteps.length}
+                className="flex items-center gap-1.5 bg-green-600 text-white px-3 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition"
+              >
+                <Play size={14} /> Start koken
+              </button>
+            </div>
           </div>
 
           {sessions.map(s => (
@@ -223,6 +283,50 @@ export function RecipeDetail() {
           ))}
         </div>
       </div>
+
+      {showPairPicker && (
+        <div className="fixed inset-0 bg-black/40 z-[60] flex items-end">
+          <div className="bg-white w-full max-w-lg mx-auto rounded-t-2xl p-4 max-h-[70vh] flex flex-col">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-gray-900">Kook samen met...</h3>
+              <button onClick={() => setShowPairPicker(false)}><X size={20} className="text-gray-500" /></button>
+            </div>
+            {pairError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-2 mb-3">{pairError}</div>
+            )}
+            <div className="relative mb-3">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                value={pairSearch}
+                onChange={e => setPairSearch(e.target.value)}
+                placeholder="Zoek recept..."
+                className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                autoFocus
+              />
+            </div>
+            <div className="overflow-y-auto flex-1 space-y-2">
+              {filteredPairCandidates.length === 0 && (
+                <p className="text-sm text-gray-400 text-center py-6">Geen andere recepten gevonden.</p>
+              )}
+              {filteredPairCandidates.map(r => (
+                <button
+                  key={r.id}
+                  onClick={() => startCookingWithPair(r)}
+                  className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 text-left"
+                >
+                  {r.cover_photo
+                    ? <img src={r.cover_photo} alt="" className="w-10 h-10 rounded-lg object-cover shrink-0" />
+                    : <div className="w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center shrink-0">
+                        <ChefHat size={16} className="text-gray-300" />
+                      </div>
+                  }
+                  <div className="text-sm font-medium text-gray-900">{r.name}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

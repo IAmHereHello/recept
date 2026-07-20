@@ -17,7 +17,7 @@ def _fetch_recipe(conn: Connection, recipe_id: int) -> dict:
         "SELECT * FROM ingredients WHERE recipe_id = ? ORDER BY sort_order", (recipe_id,)
     ).fetchall()]
     r["steps"] = [dict(s) for s in conn.execute(
-        "SELECT * FROM steps WHERE recipe_id = ? ORDER BY sort_order", (recipe_id,)
+        "SELECT * FROM steps WHERE recipe_id = ? ORDER BY track, sort_order", (recipe_id,)
     ).fetchall()]
     rating_row = conn.execute(
         "SELECT AVG(r.stars) as avg FROM ratings r JOIN cook_sessions cs ON r.cook_session_id = cs.id WHERE cs.recipe_id = ?",
@@ -92,8 +92,8 @@ def create_recipe(body: RecipeIn, conn: Connection = Depends(get_db)):
         )
     for step in body.steps:
         conn.execute(
-            "INSERT INTO steps (recipe_id, sort_order, description) VALUES (?,?,?)",
-            (recipe_id, step.sort_order, step.description)
+            "INSERT INTO steps (recipe_id, sort_order, description, wait_time_minutes, track) VALUES (?,?,?,?,?)",
+            (recipe_id, step.sort_order, step.description, step.wait_time_minutes, step.track.value)
         )
     conn.commit()
     return _fetch_recipe(conn, recipe_id)
@@ -120,8 +120,8 @@ def update_recipe(recipe_id: int, body: RecipeIn, conn: Connection = Depends(get
         )
     for step in body.steps:
         conn.execute(
-            "INSERT INTO steps (recipe_id, sort_order, description) VALUES (?,?,?)",
-            (recipe_id, step.sort_order, step.description)
+            "INSERT INTO steps (recipe_id, sort_order, description, wait_time_minutes, track) VALUES (?,?,?,?,?)",
+            (recipe_id, step.sort_order, step.description, step.wait_time_minutes, step.track.value)
         )
     conn.commit()
     return _fetch_recipe(conn, recipe_id)

@@ -72,4 +72,16 @@ describe('CookingSessionRejoin', () => {
 
     expect(screen.getByText('Cooking mode page')).toBeInTheDocument()
   })
+
+  it('does not redirect away from a different (paired sibling) cook page either', async () => {
+    // ACTIVE reports recipe 1 as the most-recently-active session, but we're
+    // already on recipe 2's cook page (its paired sibling) — CookingMode's
+    // own logic owns this page, so rejoin must not yank us to recipe 1.
+    setUser('michael')
+    api.getActiveSession.mockResolvedValue(ACTIVE)
+    await act(async () => { renderAt('/recipes/2/cook?session=6') })
+
+    expect(screen.getByText('Cooking mode page')).toBeInTheDocument()
+    expect(api.getActiveSession).toHaveBeenCalled()
+  })
 })

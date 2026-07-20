@@ -48,7 +48,36 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
             sort_order INTEGER NOT NULL,
-            description TEXT NOT NULL
+            description TEXT NOT NULL,
+            wait_time_minutes INTEGER,
+            track TEXT NOT NULL DEFAULT 'main' CHECK(track IN ('main','meanwhile'))
+        );
+
+        CREATE TABLE IF NOT EXISTS session_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS step_durations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+            track TEXT NOT NULL DEFAULT 'main' CHECK(track IN ('main','meanwhile')),
+            sort_order INTEGER NOT NULL,
+            avg_seconds REAL NOT NULL,
+            sample_count INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(recipe_id, track, sort_order)
+        );
+
+        CREATE TABLE IF NOT EXISTS step_time_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+            track TEXT NOT NULL DEFAULT 'main' CHECK(track IN ('main','meanwhile')),
+            sort_order INTEGER NOT NULL,
+            cook_session_id INTEGER NOT NULL REFERENCES cook_sessions(id) ON DELETE CASCADE,
+            seconds INTEGER NOT NULL,
+            counted INTEGER,
+            recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
         CREATE TABLE IF NOT EXISTS cook_sessions (
@@ -174,6 +203,24 @@ def init_db():
         conn.execute(
             "UPDATE cook_sessions SET last_activity_at = COALESCE(step_started_at, cooked_at) WHERE finished_at IS NULL"
         )
+
+    # Migration: steps gain an explicit wait time (replacing regex-parsing of
+    # the description text) and a track ('main' vs 'meanwhile') so the recipe
+    # builder can hold a pool of flexible-timing steps alongside the guided
+    # main sequence. Existing rows default to track='main' via the column
+    # DEFAULT, which is exactly the old (single-track) behavior.
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(steps)").fetchall()]
+    if "wait_time_minutes" not in cols:
+        conn.execute("ALTER TABLE steps ADD COLUMN wait_time_minutes INTEGER")
+    if "track" not in cols:
+        conn.execute("ALTER TABLE steps ADD COLUMN track TEXT NOT NULL DEFAULT 'main' CHECK(track IN ('main','meanwhile'))")
+
+    # Migration: cook_sessions gain a nullable group_id linking two sessions
+    # started together via "Kook samen met..." (paired multi-recipe cooking).
+    # Most sessions are solo and stay NULL.
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(cook_sessions)").fetchall()]
+    if "group_id" not in cols:
+        conn.execute("ALTER TABLE cook_sessions ADD COLUMN group_id INTEGER REFERENCES session_groups(id) ON DELETE SET NULL")
 
     conn.commit()
     conn.close()

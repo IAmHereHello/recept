@@ -18,8 +18,13 @@ export function CookingSessionRejoin() {
     if (!me) return
     api.getActiveSession().then(active => {
       if (!active || active.cooked_by !== me) return
+      // Already inside some cooking-mode page — even a paired sibling's, if
+      // that one happens to be more "recently active" than this one — is
+      // already "back in your cooking flow"; CookingMode's own mount effect
+      // is what validates/rejoins the specific session at that URL, so don't
+      // yank the user to a different (sibling) recipe's cook page instead.
+      if (/^\/recipes\/\d+\/cook$/.test(location.pathname)) return
       const cookPath = `/recipes/${active.recipe_id}/cook`
-      if (location.pathname === cookPath) return
       navigate(`${cookPath}?session=${active.session_id}`, { replace: true })
     }).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps

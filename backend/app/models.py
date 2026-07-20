@@ -31,9 +31,16 @@ class IngredientIn(BaseModel):
     sort_order: int = 0
 
 
+class StepTrack(str, Enum):
+    main = "main"
+    meanwhile = "meanwhile"
+
+
 class StepIn(BaseModel):
     sort_order: int
     description: str
+    wait_time_minutes: Optional[int] = None
+    track: StepTrack = StepTrack.main
 
 
 class RecipeIn(BaseModel):
@@ -75,6 +82,14 @@ class PhotoOut(BaseModel):
     uploaded_by: Optional[User] = None
 
 
+class PendingStepConfirmationOut(BaseModel):
+    log_id: int
+    track: StepTrack
+    sort_order: int
+    seconds: int
+    avg_seconds: float
+
+
 class CookSessionOut(BaseModel):
     id: int
     recipe_id: int
@@ -87,6 +102,8 @@ class CookSessionOut(BaseModel):
     timer_seconds: Optional[int] = None
     timer_started_at: Optional[str] = None
     is_stale: bool = False
+    group_id: Optional[int] = None
+    pending_step_confirmation: Optional[PendingStepConfirmationOut] = None
     ratings: List[dict] = []
     photos: List[PhotoOut] = []
 
@@ -109,6 +126,28 @@ class ActiveSessionOut(BaseModel):
     active_timer_remaining_seconds: Optional[int] = None
     estimated_remaining_seconds: Optional[int] = None
     is_stale: bool = False
+    group_id: Optional[int] = None
+
+
+class SessionGroupCreateIn(BaseModel):
+    recipe_ids: List[int] = Field(..., min_length=2, max_length=2)
+    cooked_by: Optional[User] = None
+
+
+class SessionGroupOut(BaseModel):
+    group_id: int
+    sessions: List[CookSessionOut]
+
+
+class StepTimeConfirmIn(BaseModel):
+    counted: bool
+
+
+class GroupSessionOut(BaseModel):
+    session_id: int
+    recipe_id: int
+    recipe_name: str
+    finished_at: Optional[str] = None
 
 
 class PendingReviewOut(BaseModel):

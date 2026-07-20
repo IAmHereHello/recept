@@ -24,7 +24,7 @@ export function Home() {
     .slice(0, 5)
 
   return (
-    <div className="p-4 pb-24 max-w-lg mx-auto">
+    <div className="w-full p-4 pb-24 max-w-lg mx-auto">
       <div className="flex items-center justify-between mb-6 mt-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">

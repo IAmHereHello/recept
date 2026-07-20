@@ -184,7 +184,7 @@ export function Planner() {
   )
 
   return (
-    <div className="p-4 pb-28 max-w-lg mx-auto">
+    <div className="w-full p-4 pb-28 max-w-lg mx-auto">
       <div className="flex items-center justify-between mt-4 mb-4">
         <h1 className="text-2xl font-bold text-gray-900">Maaltijdplanner</h1>
       </div>

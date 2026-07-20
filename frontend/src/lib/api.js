@@ -47,8 +47,12 @@ export const api = {
   clearTimer: (sessionId) => req('DELETE', `/sessions/${sessionId}/timer`),
   finishCooking: (sessionId) => req('POST', `/sessions/${sessionId}/finish`),
   getActiveSession: () => req('GET', '/sessions/active'),
+  getInProgressSessions: () => req('GET', '/sessions/in-progress'),
   touchSession: (sessionId) => req('POST', `/sessions/${sessionId}/touch`),
   deleteSession: (sessionId) => req('DELETE', `/sessions/${sessionId}`),
+  createSessionGroup: (recipeIds, cookedBy) => req('POST', '/sessions/group', { recipe_ids: recipeIds, cooked_by: cookedBy }),
+  getSessionGroup: (groupId) => req('GET', `/sessions/group/${groupId}`),
+  confirmStepTime: (logId, counted) => req('POST', `/sessions/step-time/${logId}/confirm`, { counted }),
 
   // Planner
   getWeek: (weekStart) => req('GET', `/plan/${weekStart}`),

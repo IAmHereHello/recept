@@ -16,6 +16,8 @@ vi.mock('../lib/api', () => ({
     uploadPhoto: vi.fn(),
     deletePhoto: vi.fn(),
     deleteRecipe: vi.fn(),
+    getRecipes: vi.fn(),
+    createSessionGroup: vi.fn(),
   },
 }))
 
@@ -175,5 +177,84 @@ describe('RecipeDetail photo delete', () => {
     await user.click(within(mineWrapper).getByRole('button'))
 
     expect(api.deletePhoto).toHaveBeenCalledWith(5, 10)
+  })
+})
+
+describe('RecipeDetail "Kook samen met..." pairing', () => {
+  const RECIPE_WITH_STEPS = {
+    ...RECIPE,
+    steps: [{ sort_order: 1, description: 'Verwarm de oven', track: 'main' }],
+  }
+  const OTHER_RECIPE = { id: 2, name: 'Flatbread', cover_photo: null, steps: [{ sort_order: 1, description: 'Kneed', track: 'main' }] }
+  const NO_STEPS_RECIPE = { id: 3, name: 'Lege placeholder', cover_photo: null, steps: [] }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    setUser('michael')
+    api.getRecipe.mockResolvedValue(RECIPE_WITH_STEPS)
+    api.getSessions.mockResolvedValue([])
+  })
+
+  it('opens the picker and lists other recipes, excluding this one and step-less ones', async () => {
+    const user = userEvent.setup()
+    api.getRecipes.mockResolvedValue([RECIPE_WITH_STEPS, OTHER_RECIPE, NO_STEPS_RECIPE])
+    renderDetail()
+    await screen.findByText('Pasta')
+
+    await user.click(screen.getByText('Kook samen met...'))
+
+    expect(await screen.findByText('Flatbread')).toBeInTheDocument()
+    expect(screen.queryByText('Lege placeholder')).not.toBeInTheDocument()
+  })
+
+  it('filters candidates by search text', async () => {
+    const user = userEvent.setup()
+    api.getRecipes.mockResolvedValue([RECIPE_WITH_STEPS, OTHER_RECIPE])
+    renderDetail()
+    await screen.findByText('Pasta')
+
+    await user.click(screen.getByText('Kook samen met...'))
+    await screen.findByText('Flatbread')
+    await user.type(screen.getByPlaceholderText('Zoek recept...'), 'zzz')
+
+    expect(screen.queryByText('Flatbread')).not.toBeInTheDocument()
+  })
+
+  it('starts a paired session and navigates to this recipe\'s cook page', async () => {
+    const user = userEvent.setup()
+    api.getRecipes.mockResolvedValue([RECIPE_WITH_STEPS, OTHER_RECIPE])
+    api.createSessionGroup.mockResolvedValue({
+      group_id: 9,
+      sessions: [{ id: 50, recipe_id: 2 }, { id: 51, recipe_id: 1 }],
+    })
+    renderDetail()
+    await screen.findByText('Pasta')
+
+    await user.click(screen.getByText('Kook samen met...'))
+    await user.click(await screen.findByText('Flatbread'))
+
+    expect(api.createSessionGroup).toHaveBeenCalledWith([1, 2], 'michael')
+  })
+
+  it('shows an error message when pairing fails (e.g. already cooking)', async () => {
+    const user = userEvent.setup()
+    api.getRecipes.mockResolvedValue([RECIPE_WITH_STEPS, OTHER_RECIPE])
+    api.createSessionGroup.mockRejectedValue(new Error('Er is al een kooksessie in uitvoering.'))
+    renderDetail()
+    await screen.findByText('Pasta')
+
+    await user.click(screen.getByText('Kook samen met...'))
+    await user.click(await screen.findByText('Flatbread'))
+
+    expect(await screen.findByText('Er is al een kooksessie in uitvoering.')).toBeInTheDocument()
+  })
+
+  it('disables the pairing button when this recipe has no main steps', async () => {
+    api.getRecipe.mockResolvedValue(RECIPE) // steps: []
+    renderDetail()
+    await screen.findByText('Pasta')
+
+    expect(screen.getByText('Kook samen met...').closest('button')).toBeDisabled()
   })
 })

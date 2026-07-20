@@ -31,7 +31,7 @@ export function Settings() {
   }
 
   return (
-    <div className="p-6 max-w-lg mx-auto">
+    <div className="w-full p-6 max-w-lg mx-auto">
       <h1 className="text-2xl font-bold text-gray-900 mb-1">Instellingen</h1>
       <p className="text-gray-500 mb-8">Wie ben jij op dit apparaat?</p>
 

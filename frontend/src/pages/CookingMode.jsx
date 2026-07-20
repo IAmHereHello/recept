@@ -18,6 +18,11 @@ function formatTime(totalSeconds) {
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
+function formatDuration(seconds) {
+  if (seconds < 90) return `${Math.round(seconds)} sec`
+  return `${Math.round(seconds / 60)} min`
+}
+
 const HEARTBEAT_INTERVAL_MS = 60000
 
 export function CookingMode() {
@@ -33,9 +38,15 @@ export function CookingMode() {
   const [remaining, setRemaining] = useState(0)
   const [timerDone, setTimerDone] = useState(false)
   const [showStaleDialog, setShowStaleDialog] = useState(false)
+  const [groupSessions, setGroupSessions] = useState([])
+  const [meanwhileIndex, setMeanwhileIndex] = useState(0)
+  const [pendingConfirmation, setPendingConfirmation] = useState(null)
   const wakeLockRef = useRef(null)
   const audioCtxRef = useRef(null)
   const me = getUser()
+
+  const mainSteps = (recipe?.steps || []).filter(s => s.track !== 'meanwhile')
+  const meanwhileSteps = (recipe?.steps || []).filter(s => s.track === 'meanwhile')
 
   function restoreTimerFromSession(session) {
     if (session.timer_seconds == null || session.timer_started_at == null) return
@@ -54,6 +65,14 @@ export function CookingMode() {
   }
 
   useEffect(() => {
+    // Reset per-session local state up front — switching to a sibling session
+    // (via the paired-recipe tabs) reuses this same component instance, so a
+    // timer left running from the PREVIOUS session must not bleed through
+    // when the new one doesn't have one of its own.
+    resetLocalTimer()
+    setMeanwhileIndex(0)
+    setPhase('steps')
+    setShowStaleDialog(false)
     Promise.all([api.getRecipe(id), api.getSession(sessionId)]).then(([r, session]) => {
       setRecipe(r)
       if (session.finished_at) {
@@ -61,10 +80,16 @@ export function CookingMode() {
         return
       }
       setStepIndex(session.current_step || 0)
+      if (session.group_id) {
+        api.getSessionGroup(session.group_id).then(setGroupSessions).catch(() => setGroupSessions([]))
+      } else {
+        setGroupSessions([])
+      }
       if (session.is_stale) {
         setShowStaleDialog(true)
       } else {
         restoreTimerFromSession(session)
+        setPendingConfirmation(session.pending_step_confirmation || null)
       }
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -134,6 +159,7 @@ export function CookingMode() {
   async function resumeStaleSession() {
     const session = await api.touchSession(sessionId).then(() => api.getSession(sessionId))
     restoreTimerFromSession(session)
+    setPendingConfirmation(session.pending_step_confirmation || null)
     setShowStaleDialog(false)
   }
 
@@ -193,6 +219,7 @@ export function CookingMode() {
     setTimerEndAt(Date.now() + seconds * 1000)
     setRemaining(seconds)
     setTimerDone(false)
+    setMeanwhileIndex(0)
   }
 
   async function cancelTimer() {
@@ -201,13 +228,15 @@ export function CookingMode() {
   }
 
   async function goToStep(index) {
-    await api.advanceStep(sessionId, index)
+    const updated = await api.advanceStep(sessionId, index)
     setStepIndex(index)
     resetLocalTimer()
+    setMeanwhileIndex(0)
+    setPendingConfirmation(updated?.pending_step_confirmation || null)
   }
 
   async function next() {
-    if (stepIndex < recipe.steps.length - 1) {
+    if (stepIndex < mainSteps.length - 1) {
       await goToStep(stepIndex + 1)
     } else {
       setPhase('finish')
@@ -224,7 +253,44 @@ export function CookingMode() {
     navigate(`/recipes/${id}`)
   }
 
+  async function respondToConfirmation(counted) {
+    if (!pendingConfirmation) return
+    await api.confirmStepTime(pendingConfirmation.log_id, counted)
+    setPendingConfirmation(null)
+  }
+
+  function switchToSession(g) {
+    if (g.session_id === sessionId) return
+    navigate(`/recipes/${g.recipe_id}/cook?session=${g.session_id}`)
+  }
+
   if (!recipe) return <div className="p-6 text-center text-gray-400">Laden...</div>
+
+  const confirmationDialog = pendingConfirmation && (
+    <div className="fixed inset-0 bg-black/40 z-[90] flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl p-5 w-full max-w-sm">
+        <h2 className="text-base font-bold text-gray-900 mb-2">Tijd kloppend?</h2>
+        <p className="text-sm text-gray-600 mb-5">
+          Deze stap duurde {formatDuration(pendingConfirmation.seconds)}, normaal {formatDuration(pendingConfirmation.avg_seconds)}.
+          Moet dit meetellen voor de gemiddelde tijd?
+        </p>
+        <div className="flex gap-3">
+          <button
+            onClick={() => respondToConfirmation(false)}
+            className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-50 transition"
+          >
+            Nee
+          </button>
+          <button
+            onClick={() => respondToConfirmation(true)}
+            className="flex-1 bg-green-600 text-white py-2.5 rounded-xl text-sm font-medium hover:bg-green-700 transition"
+          >
+            Ja, meetellen
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 
   if (showStaleDialog) {
     return (
@@ -255,7 +321,8 @@ export function CookingMode() {
 
   if (phase === 'finish') {
     return (
-      <div className="p-4 max-w-lg mx-auto pb-24">
+      <div className="w-full p-4 max-w-lg mx-auto pb-24">
+        {confirmationDialog}
         <h1 className="text-xl font-bold text-gray-900 mt-4 mb-2">Klaar met koken!</h1>
         <p className="text-sm text-gray-500 mb-6">Voeg eventueel een foto toe.</p>
         <PhotoUploader sessionId={sessionId} uploadedBy={me} />
@@ -269,12 +336,31 @@ export function CookingMode() {
     )
   }
 
-  const step = recipe.steps[stepIndex]
-  const timerMinutes = parseTimerMinutes(step.description)
+  const step = mainSteps[stepIndex]
+  const timerMinutes = step.wait_time_minutes ?? parseTimerMinutes(step.description)
+  const meanwhileStep = meanwhileSteps[meanwhileIndex]
 
   return (
-    <div className="p-4 max-w-lg mx-auto pb-24 min-h-screen flex flex-col">
-      <div className="text-xs text-gray-400 mb-2">Stap {stepIndex + 1} van {recipe.steps.length}</div>
+    <div className="w-full p-4 max-w-lg mx-auto pb-24 min-h-screen flex flex-col">
+      {confirmationDialog}
+
+      {groupSessions.length > 1 && (
+        <div className="flex gap-2 mb-3">
+          {groupSessions.map(g => (
+            <button
+              key={g.session_id}
+              onClick={() => switchToSession(g)}
+              className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium border transition truncate
+                ${g.session_id === sessionId ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200'}
+                ${g.finished_at ? 'opacity-50' : ''}`}
+            >
+              {g.recipe_name}{g.finished_at ? ' ✓' : ''}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="text-xs text-gray-400 mb-2">Stap {stepIndex + 1} van {mainSteps.length}</div>
       <h1 className="text-lg font-semibold text-gray-900 mb-6">{recipe.name}</h1>
 
       <div className="flex-1 flex items-center justify-center text-center px-2">
@@ -297,6 +383,31 @@ export function CookingMode() {
         </div>
       )}
 
+      {timerEndAt && meanwhileStep && (
+        <div className="bg-sky-50 border border-sky-200 rounded-xl p-3 mb-4">
+          <div className="text-xs font-medium text-sky-700 mb-1">Ondertussen</div>
+          <p className="text-sm text-sky-900 mb-2">{meanwhileStep.description}</p>
+          <div className="flex gap-3">
+            <button
+              type="button"
+              disabled={meanwhileIndex === 0}
+              onClick={() => setMeanwhileIndex(i => i - 1)}
+              className="text-xs text-sky-600 font-medium disabled:opacity-40"
+            >
+              ← Vorige
+            </button>
+            <button
+              type="button"
+              disabled={meanwhileIndex >= meanwhileSteps.length - 1}
+              onClick={() => setMeanwhileIndex(i => i + 1)}
+              className="text-xs text-sky-600 font-medium disabled:opacity-40"
+            >
+              Volgende →
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="flex gap-3">
         <button
           onClick={prev}
@@ -309,7 +420,7 @@ export function CookingMode() {
           onClick={next}
           className="flex-1 flex items-center justify-center gap-1 bg-green-600 text-white py-3 rounded-xl text-sm font-medium hover:bg-green-700 transition"
         >
-          {stepIndex < recipe.steps.length - 1 ? <>Volgende <ChevronRight size={16} /></> : 'Klaar met stappen'}
+          {stepIndex < mainSteps.length - 1 ? <>Volgende <ChevronRight size={16} /></> : 'Klaar met stappen'}
         </button>
       </div>
     </div>

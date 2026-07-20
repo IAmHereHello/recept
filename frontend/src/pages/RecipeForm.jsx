@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../lib/api'
 import { Loader2, Link as LinkIcon, X, ChevronRight, ChevronLeft } from 'lucide-react'
+import { StepEditor, stepsFromApi, stepsToApi } from '../components/StepEditor'
 
 const EMPTY = {
   name: '', description: '', cook_time: '', difficulty: '',
@@ -26,20 +27,15 @@ export function RecipeForm() {
   const [ingredientPhase, setIngredientPhase] = useState('names') // 'names' | 'amounts'
   const [ingredientNamesText, setIngredientNamesText] = useState('')
 
-  // Steps as raw text (blank line = step separator)
-  const [stepsText, setStepsText] = useState('')
+  // Steps as a structured main/meanwhile list (see StepEditor)
+  const [editorSteps, setEditorSteps] = useState([])
 
   useEffect(() => {
     if (isEdit) {
       api.getRecipe(id).then(r => {
         setForm({ ...r, cook_time: r.cook_time ?? '', portions: r.portions ?? '', freezer_months: r.freezer_months ?? '' })
         setIngredientPhase('amounts')
-        setStepsText(
-          (r.steps || [])
-            .sort((a, b) => a.sort_order - b.sort_order)
-            .map(s => s.description)
-            .join('\n\n')
-        )
+        setEditorSteps(stepsFromApi(r.steps))
         setLoading(false)
       })
     }
@@ -94,10 +90,9 @@ export function RecipeForm() {
         ...data,
         cook_time: data.cook_time ?? '',
         ingredients: (data.ingredients || []).map((ing, i) => ({ ...ing, sort_order: i })),
-        steps: (data.steps || []).map((s, i) => ({ ...s, sort_order: i + 1 })),
       }))
       setIngredientPhase('amounts')
-      setStepsText((data.steps || []).map(s => s.description).join('\n\n'))
+      setEditorSteps(stepsFromApi(data.steps))
       setImportUrl('')
     } catch (e) {
       setError(e.message)
@@ -111,12 +106,6 @@ export function RecipeForm() {
     setSaving(true)
     setError('')
     try {
-      const parsedSteps = stepsText
-        .split(/\n\n+/)
-        .map(s => s.trim())
-        .filter(Boolean)
-        .map((description, i) => ({ sort_order: i + 1, description }))
-
       const payload = {
         ...form,
         cook_time: form.cook_time ? Number(form.cook_time) : null,
@@ -124,7 +113,7 @@ export function RecipeForm() {
         portions: form.portions ? Number(form.portions) : null,
         freezer_months: form.freezer_months ? Number(form.freezer_months) : null,
         ingredients: form.ingredients.filter(i => i.name.trim()),
-        steps: parsedSteps,
+        steps: stepsToApi(editorSteps),
       }
       if (isEdit) {
         await api.updateRecipe(id, payload)
@@ -141,10 +130,10 @@ export function RecipeForm() {
 
   if (loading) return <div className="p-6 text-center text-gray-400">Laden...</div>
 
-  const stepCount = stepsText.split(/\n\n+/).map(s => s.trim()).filter(Boolean).length
+  const stepCount = editorSteps.filter(s => s.description.trim()).length
 
   return (
-    <form onSubmit={submit} className="p-4 pb-28 max-w-lg mx-auto">
+    <form onSubmit={submit} className="w-full p-4 pb-28 max-w-lg mx-auto">
       <h1 className="text-2xl font-bold text-gray-900 mt-4 mb-6">
         {isEdit ? 'Recept bewerken' : 'Nieuw recept'}
       </h1>
@@ -330,17 +319,10 @@ export function RecipeForm() {
             <span className="text-xs text-gray-400">{stepCount} stap{stepCount !== 1 ? 'pen' : ''}</span>
           )}
         </div>
-        <textarea
-          value={stepsText}
-          onChange={e => setStepsText(e.target.value)}
-          placeholder={'Verwarm de oven op 180°C.\n\nMeng de bloem met de suiker.\n\nBak 25 minuten goudbruin.'}
-          rows={10}
-          className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
-        />
-        <p className="text-xs text-gray-400 mt-1">Lege regel tussen stappen = nieuwe stap</p>
+        <StepEditor steps={editorSteps} onChange={setEditorSteps} />
       </section>
 
-      <div className="fixed bottom-16 left-0 right-0 bg-white border-t border-gray-100 px-4 py-3 max-w-lg mx-auto">
+      <div className="w-full fixed bottom-16 left-0 right-0 bg-white border-t border-gray-100 px-4 py-3 max-w-lg mx-auto">
         <div className="flex gap-3">
           <button type="button" onClick={() => navigate(-1)}
             className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-50 transition">

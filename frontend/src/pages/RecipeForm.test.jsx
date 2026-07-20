@@ -88,3 +88,56 @@ describe('RecipeForm freezer fields', () => {
     expect(inputNear('Vriezer THT (maanden)')).toHaveValue(4)
   })
 })
+
+describe('RecipeForm step editor integration', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    api.createRecipe.mockResolvedValue({ id: 1 })
+  })
+
+  it('submits main and meanwhile steps with wait times and fresh per-track sort_order', async () => {
+    const user = userEvent.setup()
+    renderForm()
+
+    await user.type(inputNear('Naam *'), 'Ovenschotel')
+
+    const addButtons = screen.getAllByText('Stap toevoegen')
+    await user.click(addButtons[0]) // main step
+    await user.type(screen.getAllByPlaceholderText('Beschrijf deze stap...')[0], 'Bak in de oven')
+    await user.type(screen.getByPlaceholderText('Wachttijd (min, optioneel)'), '45')
+
+    await user.click(screen.getAllByText('Stap toevoegen').at(-1)) // meanwhile step
+    await user.type(screen.getAllByPlaceholderText('Beschrijf deze stap...')[1], 'Snijd de groenten')
+
+    await user.click(screen.getByRole('button', { name: /Recept aanmaken/ }))
+
+    expect(api.createRecipe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        steps: [
+          { sort_order: 1, description: 'Bak in de oven', wait_time_minutes: 45, track: 'main' },
+          { sort_order: 1, description: 'Snijd de groenten', wait_time_minutes: null, track: 'meanwhile' },
+        ],
+      })
+    )
+  })
+
+  it('prefills the editor with both tracks from an existing recipe', async () => {
+    api.getRecipe.mockResolvedValue({
+      id: 5, name: 'Stoofpot', ingredients: [],
+      steps: [
+        { sort_order: 1, description: 'Snijd het vlees', track: 'main' },
+        { sort_order: 1, description: 'Was de aardappelen', track: 'meanwhile' },
+      ],
+    })
+    render(
+      <MemoryRouter initialEntries={['/recipes/5/edit']}>
+        <Routes>
+          <Route path="/recipes/:id/edit" element={<RecipeForm />} />
+        </Routes>
+      </MemoryRouter>
+    )
+
+    expect(await screen.findByDisplayValue('Snijd het vlees')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('Was de aardappelen')).toBeInTheDocument()
+  })
+})
