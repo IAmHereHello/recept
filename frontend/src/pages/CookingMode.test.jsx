@@ -393,4 +393,51 @@ describe('CookingMode', () => {
 
     vi.unstubAllGlobals()
   })
+
+  it('quits cooking after confirmation, deleting the session and navigating away', async () => {
+    stubWakeLock()
+    const user = userEvent.setup()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderCookingMode()
+    await screen.findByText('Stap 1 van 2')
+
+    await user.click(screen.getByText('Stop met koken'))
+
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringMatching(/telt niet mee/))
+    expect(api.deleteSession).toHaveBeenCalledWith(5)
+    expect(await screen.findByText('Recipe detail page')).toBeInTheDocument()
+
+    vi.unstubAllGlobals()
+  })
+
+  it('does not quit cooking when the confirmation is declined', async () => {
+    stubWakeLock()
+    const user = userEvent.setup()
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    renderCookingMode()
+    await screen.findByText('Stap 1 van 2')
+
+    await user.click(screen.getByText('Stop met koken'))
+
+    expect(api.deleteSession).not.toHaveBeenCalled()
+    expect(screen.getByText('Stap 1 van 2')).toBeInTheDocument()
+
+    vi.unstubAllGlobals()
+  })
+
+  it('does not show the quit-cooking button on the finish/photo phase', async () => {
+    stubWakeLock()
+    const user = userEvent.setup()
+    renderCookingMode()
+    await screen.findByText('Stap 1 van 2')
+
+    await user.click(screen.getByText('Volgende'))
+    await screen.findByText('Stap 2 van 2')
+    await user.click(screen.getByText('Klaar met stappen'))
+
+    await screen.findByText('Klaar met koken!')
+    expect(screen.queryByText('Stop met koken')).not.toBeInTheDocument()
+
+    vi.unstubAllGlobals()
+  })
 })

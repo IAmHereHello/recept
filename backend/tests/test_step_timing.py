@@ -301,3 +301,73 @@ def test_in_progress_endpoint_lists_all_active_sessions(client):
 def test_session_group_not_found_404(client):
     resp = client.get("/sessions/group/999")
     assert resp.status_code == 404
+
+
+def test_quit_session_undoes_its_own_counted_contribution_but_keeps_others(client, tmp_path):
+    recipe = make_recipe(client)
+    db = tmp_path / "test.db"
+
+    s1 = start_cooking(client, recipe["id"])
+    _backdate_step_started(db, s1["id"], 100)
+    client.post(f"/sessions/{s1['id']}/step", json={"step_index": 1})  # baseline avg=100
+    client.post(f"/sessions/{s1['id']}/finish")
+
+    s2 = start_cooking(client, recipe["id"])
+    _backdate_step_started(db, s2["id"], 105)  # 5% off -> auto-counted, avg becomes 102.5
+    resp = client.post(f"/sessions/{s2['id']}/step", json={"step_index": 1})
+    assert resp.json()["pending_step_confirmation"] is None
+
+    quit_resp = client.delete(f"/sessions/{s2['id']}")
+    assert quit_resp.status_code == 204
+
+    # Average should be back to exactly 100 (s1's contribution only) -> a
+    # 112s sample is 12% off 100 (outlier) but only 9.3% off 102.5, so this
+    # only stays an outlier if s2's contribution was genuinely undone.
+    s3 = start_cooking(client, recipe["id"])
+    _backdate_step_started(db, s3["id"], 112)
+    resp = client.post(f"/sessions/{s3['id']}/step", json={"step_index": 1})
+    assert resp.json()["pending_step_confirmation"] is not None
+
+
+def test_quit_session_clears_step_duration_when_it_was_the_only_contributor(client, tmp_path):
+    recipe = make_recipe(client)
+    db = tmp_path / "test.db"
+
+    s1 = start_cooking(client, recipe["id"])
+    _backdate_step_started(db, s1["id"], 100)
+    client.post(f"/sessions/{s1['id']}/step", json={"step_index": 1})  # baseline avg=100, sole sample
+
+    quit_resp = client.delete(f"/sessions/{s1['id']}")
+    assert quit_resp.status_code == 204
+
+    # No learned data should remain -- a wildly different value becomes the
+    # fresh baseline instead of triggering an outlier confirmation.
+    s2 = start_cooking(client, recipe["id"])
+    _backdate_step_started(db, s2["id"], 900)
+    resp = client.post(f"/sessions/{s2['id']}/step", json={"step_index": 1})
+    assert resp.json()["pending_step_confirmation"] is None
+
+
+def test_quit_session_with_pending_confirmation_does_not_affect_average(client, tmp_path):
+    recipe = make_recipe(client)
+    db = tmp_path / "test.db"
+
+    s1 = start_cooking(client, recipe["id"])
+    _backdate_step_started(db, s1["id"], 100)
+    client.post(f"/sessions/{s1['id']}/step", json={"step_index": 1})  # baseline avg=100
+    client.post(f"/sessions/{s1['id']}/finish")
+
+    s2 = start_cooking(client, recipe["id"])
+    _backdate_step_started(db, s2["id"], 300)  # wild outlier vs 100 -> pending, never counted
+    resp = client.post(f"/sessions/{s2['id']}/step", json={"step_index": 1})
+    assert resp.json()["pending_step_confirmation"] is not None
+
+    quit_resp = client.delete(f"/sessions/{s2['id']}")
+    assert quit_resp.status_code == 204
+
+    # Average should still be exactly 100 -- the pending sample never counted
+    # in the first place, so quitting has nothing to undo for it.
+    s3 = start_cooking(client, recipe["id"])
+    _backdate_step_started(db, s3["id"], 105)
+    resp = client.post(f"/sessions/{s3['id']}/step", json={"step_index": 1})
+    assert resp.json()["pending_step_confirmation"] is None

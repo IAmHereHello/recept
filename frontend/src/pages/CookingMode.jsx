@@ -253,6 +253,13 @@ export function CookingMode() {
     navigate(`/recipes/${id}`)
   }
 
+  async function quitCooking() {
+    if (!confirm('Weet je zeker dat je wilt stoppen met koken? De tijd van deze sessie telt niet mee voor de gemiddelde staptijd.')) return
+    wakeLockRef.current?.release?.()
+    await api.deleteSession(sessionId)
+    navigate(`/recipes/${id}`, { replace: true })
+  }
+
   async function respondToConfirmation(counted) {
     if (!pendingConfirmation) return
     await api.confirmStepTime(pendingConfirmation.log_id, counted)
@@ -360,7 +367,12 @@ export function CookingMode() {
         </div>
       )}
 
-      <div className="text-xs text-gray-400 mb-2">Stap {stepIndex + 1} van {mainSteps.length}</div>
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs text-gray-400">Stap {stepIndex + 1} van {mainSteps.length}</div>
+        <button type="button" onClick={quitCooking} className="text-xs text-gray-400 hover:text-red-500 transition">
+          Stop met koken
+        </button>
+      </div>
       <h1 className="text-lg font-semibold text-gray-900 mb-6">{recipe.name}</h1>
 
       <div className="flex-1 flex items-center justify-center text-center px-2">

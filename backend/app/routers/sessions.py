@@ -197,6 +197,41 @@ def _log_step_time(conn: Connection, recipe_id: int, track: str, sort_order: int
         )
 
 
+def _undo_counted_step_times(conn: Connection, session_id: int) -> None:
+    # Quitting mid-cook (whether via the explicit "Stop met koken" button or
+    # abandoning a stale session) must not leave this session's step times
+    # baked into the learned average — recompute each affected step's average
+    # from its remaining counted samples (raw seconds are kept per-log
+    # specifically so this recomputation is exact, not an approximation of
+    # reversing the incremental rolling average), or clear it entirely if
+    # this session was the only contributor so far. Pending/declined samples
+    # never touched step_durations in the first place, so they need no
+    # special handling here — they're simply cascade-deleted with the
+    # session's rows.
+    affected = conn.execute(
+        "SELECT DISTINCT recipe_id, track, sort_order FROM step_time_logs WHERE cook_session_id=? AND counted=1",
+        (session_id,)
+    ).fetchall()
+    for row in affected:
+        remaining = conn.execute(
+            """SELECT seconds FROM step_time_logs
+               WHERE recipe_id=? AND track=? AND sort_order=? AND counted=1 AND cook_session_id != ?""",
+            (row["recipe_id"], row["track"], row["sort_order"], session_id)
+        ).fetchall()
+        if remaining:
+            seconds_list = [r["seconds"] for r in remaining]
+            new_avg = sum(seconds_list) / len(seconds_list)
+            conn.execute(
+                "UPDATE step_durations SET avg_seconds=?, sample_count=?, updated_at=? WHERE recipe_id=? AND track=? AND sort_order=?",
+                (new_avg, len(seconds_list), _now(), row["recipe_id"], row["track"], row["sort_order"])
+            )
+        else:
+            conn.execute(
+                "DELETE FROM step_durations WHERE recipe_id=? AND track=? AND sort_order=?",
+                (row["recipe_id"], row["track"], row["sort_order"])
+            )
+
+
 def _fetch_session(conn: Connection, session_id: int) -> dict:
     row = conn.execute("SELECT * FROM cook_sessions WHERE id = ?", (session_id,)).fetchone()
     if not row:
@@ -423,12 +458,14 @@ def touch_session(session_id: int, conn: Connection = Depends(get_db)):
 
 @router.delete("/{session_id}", status_code=204)
 def delete_session(session_id: int, conn: Connection = Depends(get_db)):
-    # Only for abandoning an in-progress session (e.g. from the "restart
-    # cooking session?" dialog after prolonged inactivity) — finished sessions
-    # carry review/photo/freezer history and must never be deletable this way.
+    # Abandons an in-progress session — used by both the "restart cooking
+    # session?" stale-session dialog and the explicit "Stop met koken"
+    # button. Finished sessions carry review/photo/freezer history and must
+    # never be deletable this way.
     session = _fetch_session(conn, session_id)
     if session["finished_at"] is not None:
         raise HTTPException(400, "Cannot delete a finished cooking session")
+    _undo_counted_step_times(conn, session_id)
     conn.execute("DELETE FROM cook_sessions WHERE id=?", (session_id,))
     conn.commit()
 
