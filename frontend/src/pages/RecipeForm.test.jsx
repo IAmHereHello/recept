@@ -9,6 +9,7 @@ vi.mock('../lib/api', () => ({
   api: {
     createRecipe: vi.fn(), getRecipe: vi.fn(), updateRecipe: vi.fn(),
     healthReview: vi.fn(), importUrl: vi.fn(),
+    uploadRecipeImage: vi.fn(), recipeImageFromUrl: vi.fn(),
   },
 }))
 

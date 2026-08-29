@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 import app.ai as ai_module
+import app.images as images_module
 import app.routers.import_recipe as import_recipe_module
 
 
@@ -76,7 +77,9 @@ class FakeAnthropicClient:
 
 def _patch(monkeypatch, *, reply_text=None, stop_reason="end_turn", fetch_text=None):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    # The page fetch lives in import_recipe; the cover-image download in app.images.
     monkeypatch.setattr(import_recipe_module, "httpx", SimpleNamespace(AsyncClient=FakeAsyncClient))
+    monkeypatch.setattr(images_module, "httpx", SimpleNamespace(AsyncClient=FakeAsyncClient))
     if reply_text is not None:
         FakeAnthropicClient.reply_text = reply_text
     if fetch_text is not None:
@@ -247,7 +250,7 @@ def _ld_with_image(image_json: str) -> str:
 def test_import_downloads_cover_image_from_jsonld(client, monkeypatch, tmp_path):
     upload_dir = tmp_path / "uploads"
     upload_dir.mkdir()
-    monkeypatch.setattr(import_recipe_module, "UPLOAD_DIR", upload_dir)
+    monkeypatch.setattr(images_module, "UPLOAD_DIR", upload_dir)
     _patch(
         monkeypatch,
         fetch_text=_ld_with_image('"https://img.example/dish.jpg"'),
@@ -266,7 +269,7 @@ def test_import_downloads_cover_image_from_jsonld(client, monkeypatch, tmp_path)
 def test_import_uses_og_image_when_jsonld_has_none(client, monkeypatch, tmp_path):
     upload_dir = tmp_path / "uploads"
     upload_dir.mkdir()
-    monkeypatch.setattr(import_recipe_module, "UPLOAD_DIR", upload_dir)
+    monkeypatch.setattr(images_module, "UPLOAD_DIR", upload_dir)
     page = (
         '<html><head><meta property="og:image" content="https://img.example/og.png">'
         '</head><body><h1>Soep</h1></body></html>'
@@ -283,7 +286,7 @@ def test_import_uses_og_image_when_jsonld_has_none(client, monkeypatch, tmp_path
 def test_import_resolves_relative_image_url(client, monkeypatch, tmp_path):
     upload_dir = tmp_path / "uploads"
     upload_dir.mkdir()
-    monkeypatch.setattr(import_recipe_module, "UPLOAD_DIR", upload_dir)
+    monkeypatch.setattr(images_module, "UPLOAD_DIR", upload_dir)
     _patch(
         monkeypatch,
         fetch_text=_ld_with_image('"/media/dish.jpg"'),
@@ -300,7 +303,7 @@ def test_import_resolves_relative_image_url(client, monkeypatch, tmp_path):
 def test_import_skips_non_image_content_type(client, monkeypatch, tmp_path):
     upload_dir = tmp_path / "uploads"
     upload_dir.mkdir()
-    monkeypatch.setattr(import_recipe_module, "UPLOAD_DIR", upload_dir)
+    monkeypatch.setattr(images_module, "UPLOAD_DIR", upload_dir)
     _patch(
         monkeypatch,
         fetch_text=_ld_with_image('"https://img.example/dish.svg"'),
@@ -318,7 +321,7 @@ def test_import_skips_non_image_content_type(client, monkeypatch, tmp_path):
 def test_import_survives_cover_image_download_failure(client, monkeypatch, tmp_path):
     upload_dir = tmp_path / "uploads"
     upload_dir.mkdir()
-    monkeypatch.setattr(import_recipe_module, "UPLOAD_DIR", upload_dir)
+    monkeypatch.setattr(images_module, "UPLOAD_DIR", upload_dir)
     _patch(
         monkeypatch,
         fetch_text=_ld_with_image('"https://img.example/dish.jpg"'),
@@ -336,8 +339,8 @@ def test_import_survives_cover_image_download_failure(client, monkeypatch, tmp_p
 def test_import_skips_oversized_cover_image(client, monkeypatch, tmp_path):
     upload_dir = tmp_path / "uploads"
     upload_dir.mkdir()
-    monkeypatch.setattr(import_recipe_module, "UPLOAD_DIR", upload_dir)
-    monkeypatch.setattr(import_recipe_module, "MAX_IMAGE_BYTES", 10)
+    monkeypatch.setattr(images_module, "UPLOAD_DIR", upload_dir)
+    monkeypatch.setattr(images_module, "MAX_IMAGE_BYTES", 10)
     _patch(
         monkeypatch,
         fetch_text=_ld_with_image('"https://img.example/huge.jpg"'),

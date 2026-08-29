@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../lib/api'
 import { Loader2, Link as LinkIcon, X, ChevronRight, ChevronLeft } from 'lucide-react'
 import { StepEditor, stepsFromApi, stepsToApi } from '../components/StepEditor'
+import { RecipeImagePicker } from '../components/RecipeImagePicker'
 
 const EMPTY = {
   name: '', description: '', cook_time: '', difficulty: '',
@@ -180,19 +181,10 @@ export function RecipeForm() {
       )}
 
       <section className="space-y-4 mb-6">
-        {form.image_path && (
-          <div className="relative">
-            <img src={form.image_path} alt="Recept afbeelding" className="w-full h-40 object-cover rounded-xl border border-gray-200" />
-            <button
-              type="button"
-              onClick={() => set('image_path', null)}
-              aria-label="Afbeelding verwijderen"
-              className="absolute top-2 right-2 bg-black/60 text-white rounded-full p-1.5 hover:bg-black/80 transition"
-            >
-              <X size={14} />
-            </button>
-          </div>
-        )}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Afbeelding</label>
+          <RecipeImagePicker value={form.image_path} onChange={p => set('image_path', p)} />
+        </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Naam *</label>
           <input required value={form.name} onChange={e => set('name', e.target.value)}

@@ -2,13 +2,14 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlite3 import Connection
 from app.ai import complete_json
 from app.config import UPLOAD_DIR
 from app.database import get_db
 from app.health import grade as health_grade
-from app.models import RecipeIn, RecipeOut
+from app.images import ImageError, download_image, save_upload
+from app.models import ImageUrlIn, RecipeIn, RecipeOut
 
 router = APIRouter(prefix="/recipes", tags=["recipes"])
 logger = logging.getLogger("app.recipes")
@@ -155,6 +156,27 @@ def create_recipe(body: RecipeIn, conn: Connection = Depends(get_db)):
         )
     conn.commit()
     return _fetch_recipe(conn, recipe_id)
+
+
+@router.post("/image")
+async def upload_recipe_image(file: UploadFile = File(...)):
+    """Store an uploaded (or camera-captured) image and return its "/uploads/..."
+    path — the form holds that string and persists it on create/update, exactly
+    like an imported cover image."""
+    try:
+        return {"image_path": await save_upload(await file.read(), file.content_type, file.filename)}
+    except ImageError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/image-from-url")
+async def recipe_image_from_url(body: ImageUrlIn):
+    """Download an image from a user-pasted URL into UPLOAD_DIR and return its
+    "/uploads/..." path."""
+    path = await download_image(body.url.strip())
+    if path is None:
+        raise HTTPException(400, "Kon geen afbeelding ophalen van deze URL.")
+    return {"image_path": path}
 
 
 @router.get("/{recipe_id}", response_model=RecipeOut)

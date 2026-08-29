@@ -220,6 +220,10 @@ class ImportUrlRequest(BaseModel):
     url: str
 
 
+class ImageUrlIn(BaseModel):
+    url: str
+
+
 class GroceryRequest(BaseModel):
     week_start: str
 

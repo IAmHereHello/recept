@@ -1,14 +1,11 @@
 import re
 import json
-import uuid
 import logging
-from urllib.parse import urljoin
 
-import aiofiles
 import httpx
 from fastapi import APIRouter, HTTPException
 from app.ai import complete_json, get_api_key
-from app.config import UPLOAD_DIR
+from app.images import download_image
 from app.models import ImportUrlRequest
 
 router = APIRouter(prefix="/import", tags=["import"])
@@ -19,19 +16,6 @@ logger = logging.getLogger("app.import")
 # client-side, so the raw HTML is mostly framework noise; the structured
 # JSON-LD block is the reliable source and is handled separately below.
 HTML_CAP = 60000
-
-# Cover-image download: only these content types are accepted, mapped to the
-# extension the file is saved with. Anything else (SVG, HTML error page, ...)
-# is skipped rather than stored.
-IMAGE_CONTENT_TYPES = {
-    "image/jpeg": ".jpg",
-    "image/jpg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-    "image/gif": ".gif",
-    "image/avif": ".avif",
-}
-MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 SYSTEM_PROMPT = """You are a recipe extraction assistant.
 You are given either schema.org Recipe JSON-LD or the raw HTML/text of a recipe webpage.
@@ -99,36 +83,6 @@ def _extract_image_url(recipe_ld: dict | None, html: str) -> str | None:
     return None
 
 
-async def _download_image(page_url: str, image_url: str) -> str | None:
-    """Download a recipe's cover image into UPLOAD_DIR and return its
-    "/uploads/..." path. Best-effort: any failure (bad URL, non-image content,
-    too large, network error) returns None so the recipe still imports — it
-    just has no image."""
-    resolved = urljoin(page_url, image_url)
-    try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as http_client:
-            resp = await http_client.get(resolved, headers={"User-Agent": "Mozilla/5.0"})
-            resp.raise_for_status()
-            content_type = resp.headers.get("content-type", "").split(";")[0].strip().lower()
-            ext = IMAGE_CONTENT_TYPES.get(content_type)
-            if ext is None:
-                logger.info("Skipping cover image with content-type %r (%s)", content_type, resolved)
-                return None
-            data = resp.content
-            if not data or len(data) > MAX_IMAGE_BYTES:
-                logger.info("Skipping cover image of %d bytes (%s)", len(data or b""), resolved)
-                return None
-    except Exception as e:
-        logger.warning("Could not download cover image %s: %s", resolved, e)
-        return None
-
-    filename = f"{uuid.uuid4()}{ext}"
-    async with aiofiles.open(UPLOAD_DIR / filename, "wb") as f:
-        await f.write(data)
-    logger.info("Saved imported cover image %s from %s", filename, resolved)
-    return f"/uploads/{filename}"
-
-
 def _find_recipe_jsonld(html: str) -> dict | None:
     """Return the first schema.org Recipe object embedded in the page, if any.
 
@@ -190,6 +144,6 @@ async def import_from_url(body: ImportUrlRequest):
     if isinstance(recipe, dict):
         image_url = _extract_image_url(recipe_ld, full_html)
         if image_url:
-            recipe["image_path"] = await _download_image(body.url, image_url)
+            recipe["image_path"] = await download_image(image_url, base_url=body.url)
 
     return recipe

@@ -29,6 +29,12 @@ export const api = {
   deleteRecipe: (id) => req('DELETE', `/recipes/${id}`),
   healthReview: (id) => req('POST', `/recipes/${id}/health-review`),
   healthReviewBulk: () => req('POST', '/recipes/health-review/bulk'),
+  uploadRecipeImage: (file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return req('POST', '/recipes/image', fd, true)
+  },
+  recipeImageFromUrl: (url) => req('POST', '/recipes/image-from-url', { url }),
 
   // Cook sessions
   getSessions: (recipeId) => req('GET', `/sessions/recipe/${recipeId}`),
