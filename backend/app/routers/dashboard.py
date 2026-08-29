@@ -36,10 +36,11 @@ def dashboard_status(conn: Connection = Depends(get_db)):
     # recipe has no cook_time set, in which case there's nothing to report.
     cook_time_remaining = (cooking["estimated_remaining_seconds"] or 0) if cooking else 0
 
-    # Path to the current recipe's photo, served with a real image Content-Type
-    # by the /uploads static mount (no auth). Same "most recent photo across the
-    # recipe's cook sessions" rule as RecipeOut.cover_photo. None when not
-    # cooking or that recipe has no photo yet.
+    # Path to the current recipe's image, served with a real image Content-Type
+    # by the /uploads static mount (no auth). Same rule as RecipeOut.cover_photo:
+    # the most recent photo across the recipe's cook sessions, falling back to
+    # the recipe's own imported cover image. None when not cooking or that
+    # recipe has neither.
     cooking_recipe_image_path = None
     if cooking:
         photo = conn.execute(
@@ -48,7 +49,13 @@ def dashboard_status(conn: Connection = Depends(get_db)):
                WHERE cs.recipe_id = ? ORDER BY p.uploaded_at DESC LIMIT 1""",
             (cooking["recipe_id"],)
         ).fetchone()
-        cooking_recipe_image_path = photo["file_path"] if photo else None
+        if photo:
+            cooking_recipe_image_path = photo["file_path"]
+        else:
+            recipe_row = conn.execute(
+                "SELECT image_path FROM recipes WHERE id = ?", (cooking["recipe_id"],)
+            ).fetchone()
+            cooking_recipe_image_path = recipe_row["image_path"] if recipe_row else None
 
     return {
         "cooking_active": cooking is not None,

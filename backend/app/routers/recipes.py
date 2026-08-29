@@ -90,7 +90,9 @@ def _fetch_recipe(conn: Connection, recipe_id: int) -> dict:
            WHERE cs.recipe_id = ? ORDER BY p.uploaded_at DESC LIMIT 1""",
         (recipe_id,)
     ).fetchone()
-    r["cover_photo"] = photo["file_path"] if photo else None
+    # A real photo of this cook's own dish wins; the imported cover image
+    # (image_path) is the fallback until such a photo exists.
+    r["cover_photo"] = photo["file_path"] if photo else r.get("image_path")
     r["health_grade"] = health_grade(r.get("health_score"))
     return r
 
@@ -137,8 +139,8 @@ def list_recipes(
 @router.post("/", response_model=RecipeOut, status_code=201)
 def create_recipe(body: RecipeIn, conn: Connection = Depends(get_db)):
     cur = conn.execute(
-        "INSERT INTO recipes (name, description, cook_time, difficulty, cuisine_type, is_vegetarian, is_vegan, is_side_dish, is_baking, portions, is_freezable, freezer_months) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-        (body.name, body.description, body.cook_time, body.difficulty, body.cuisine_type, int(body.is_vegetarian), int(body.is_vegan), int(body.is_side_dish), int(body.is_baking), body.portions, int(body.is_freezable), body.freezer_months)
+        "INSERT INTO recipes (name, description, cook_time, difficulty, cuisine_type, is_vegetarian, is_vegan, is_side_dish, is_baking, portions, is_freezable, freezer_months, image_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (body.name, body.description, body.cook_time, body.difficulty, body.cuisine_type, int(body.is_vegetarian), int(body.is_vegan), int(body.is_side_dish), int(body.is_baking), body.portions, int(body.is_freezable), body.freezer_months, body.image_path)
     )
     recipe_id = cur.lastrowid
     for ing in body.ingredients:
@@ -162,11 +164,16 @@ def get_recipe(recipe_id: int, conn: Connection = Depends(get_db)):
 
 @router.put("/{recipe_id}", response_model=RecipeOut)
 def update_recipe(recipe_id: int, body: RecipeIn, conn: Connection = Depends(get_db)):
-    _fetch_recipe(conn, recipe_id)
+    existing = _fetch_recipe(conn, recipe_id)
     conn.execute(
-        "UPDATE recipes SET name=?, description=?, cook_time=?, difficulty=?, cuisine_type=?, is_vegetarian=?, is_vegan=?, is_side_dish=?, is_baking=?, portions=?, is_freezable=?, freezer_months=? WHERE id=?",
-        (body.name, body.description, body.cook_time, body.difficulty, body.cuisine_type, int(body.is_vegetarian), int(body.is_vegan), int(body.is_side_dish), int(body.is_baking), body.portions, int(body.is_freezable), body.freezer_months, recipe_id)
+        "UPDATE recipes SET name=?, description=?, cook_time=?, difficulty=?, cuisine_type=?, is_vegetarian=?, is_vegan=?, is_side_dish=?, is_baking=?, portions=?, is_freezable=?, freezer_months=?, image_path=? WHERE id=?",
+        (body.name, body.description, body.cook_time, body.difficulty, body.cuisine_type, int(body.is_vegetarian), int(body.is_vegan), int(body.is_side_dish), int(body.is_baking), body.portions, int(body.is_freezable), body.freezer_months, body.image_path, recipe_id)
     )
+    # A replaced or removed cover image leaves its file orphaned on disk —
+    # clean it up, same as delete_photo does (only our own /uploads files).
+    old_image = existing.get("image_path")
+    if old_image and old_image != body.image_path and old_image.startswith("/uploads/"):
+        (UPLOAD_DIR / Path(old_image).name).unlink(missing_ok=True)
     conn.execute("DELETE FROM ingredients WHERE recipe_id = ?", (recipe_id,))
     conn.execute("DELETE FROM steps WHERE recipe_id = ?", (recipe_id,))
     for ing in body.ingredients:
@@ -185,7 +192,7 @@ def update_recipe(recipe_id: int, body: RecipeIn, conn: Connection = Depends(get
 
 @router.delete("/{recipe_id}", status_code=204)
 def delete_recipe(recipe_id: int, conn: Connection = Depends(get_db)):
-    _fetch_recipe(conn, recipe_id)
+    recipe = _fetch_recipe(conn, recipe_id)
     photo_rows = conn.execute(
         """SELECT p.file_path FROM photos p
            JOIN cook_sessions cs ON p.cook_session_id = cs.id
@@ -198,6 +205,9 @@ def delete_recipe(recipe_id: int, conn: Connection = Depends(get_db)):
     # get removed automatically — clean those up now that the rows are gone.
     for row in photo_rows:
         (UPLOAD_DIR / Path(row["file_path"]).name).unlink(missing_ok=True)
+    image_path = recipe.get("image_path")
+    if image_path and image_path.startswith("/uploads/"):
+        (UPLOAD_DIR / Path(image_path).name).unlink(missing_ok=True)
 
 
 @router.post("/health-review/bulk")

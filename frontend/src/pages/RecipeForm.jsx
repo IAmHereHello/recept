@@ -9,6 +9,7 @@ const EMPTY = {
   cuisine_type: '', is_vegetarian: false, is_vegan: false,
   is_side_dish: false, is_baking: false,
   portions: '', is_freezable: true, freezer_months: '',
+  image_path: null,
   ingredients: [], steps: [],
 }
 
@@ -114,6 +115,7 @@ export function RecipeForm() {
         difficulty: form.difficulty || null,
         portions: form.portions ? Number(form.portions) : null,
         freezer_months: form.freezer_months ? Number(form.freezer_months) : null,
+        image_path: form.image_path || null,
         ingredients: form.ingredients.filter(i => i.name.trim()),
         steps: stepsToApi(editorSteps),
       }
@@ -178,6 +180,19 @@ export function RecipeForm() {
       )}
 
       <section className="space-y-4 mb-6">
+        {form.image_path && (
+          <div className="relative">
+            <img src={form.image_path} alt="Recept afbeelding" className="w-full h-40 object-cover rounded-xl border border-gray-200" />
+            <button
+              type="button"
+              onClick={() => set('image_path', null)}
+              aria-label="Afbeelding verwijderen"
+              className="absolute top-2 right-2 bg-black/60 text-white rounded-full p-1.5 hover:bg-black/80 transition"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Naam *</label>
           <input required value={form.name} onChange={e => set('name', e.target.value)}

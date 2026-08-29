@@ -237,5 +237,14 @@ def init_db():
     if "health_scored_at" not in cols:
         conn.execute("ALTER TABLE recipes ADD COLUMN health_scored_at TEXT")
 
+    # Migration: a recipe's own cover image (a "/uploads/<uuid>.<ext>" path
+    # served by the static mount, same as cook-session photos). Currently only
+    # set by the URL importer, which downloads the source page's schema.org
+    # image / og:image into UPLOAD_DIR. A real cook-session photo still wins
+    # over this in RecipeOut.cover_photo — the imported image is the fallback
+    # shown until someone has actually cooked and photographed the dish.
+    if "image_path" not in cols:
+        conn.execute("ALTER TABLE recipes ADD COLUMN image_path TEXT")
+
     conn.commit()
     conn.close()

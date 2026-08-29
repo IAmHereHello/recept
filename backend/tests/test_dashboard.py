@@ -164,6 +164,14 @@ def test_status_image_path_null_when_cooking_recipe_has_no_photo(client, monkeyp
     assert client.get("/dashboard/status").json()["cooking_recipe_image_path"] is None
 
 
+def test_status_falls_back_to_imported_cover_image_when_no_photo(client, monkeypatch):
+    _freeze_today(monkeypatch, "2026-01-05")
+    recipe = make_recipe(client, name="Griekse ovenschotel", image_path="/uploads/imported.jpg")
+    start_cooking(client, recipe["id"])
+
+    assert client.get("/dashboard/status").json()["cooking_recipe_image_path"] == "/uploads/imported.jpg"
+
+
 def test_status_image_path_null_when_nothing_is_cooking(client, monkeypatch):
     _freeze_today(monkeypatch, "2026-01-05")
     make_recipe(client)  # a recipe exists but no active session

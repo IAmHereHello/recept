@@ -56,6 +56,9 @@ class RecipeIn(BaseModel):
     portions: Optional[int] = None
     is_freezable: bool = True
     freezer_months: Optional[int] = None
+    # "/uploads/<uuid>.<ext>" cover image, currently only populated by the URL
+    # importer. A real cook-session photo overrides this in RecipeOut.cover_photo.
+    image_path: Optional[str] = None
     ingredients: List[IngredientIn] = []
     steps: List[StepIn] = []
 

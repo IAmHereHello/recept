@@ -149,6 +149,64 @@ def test_delete_recipe_cascades_to_ingredients_and_sessions(client):
     assert resp.json() == []
 
 
+def test_image_path_round_trips_and_feeds_cover_photo(client):
+    recipe = make_recipe(client, image_path="/uploads/imported.jpg")
+    assert recipe["image_path"] == "/uploads/imported.jpg"
+    # With no cook-session photo yet, the imported image is the cover photo.
+    assert recipe["cover_photo"] == "/uploads/imported.jpg"
+
+    fetched = client.get(f"/recipes/{recipe['id']}").json()
+    assert fetched["image_path"] == "/uploads/imported.jpg"
+    assert fetched["cover_photo"] == "/uploads/imported.jpg"
+
+
+def test_cook_session_photo_overrides_imported_cover_image(client, tmp_path, monkeypatch):
+    import app.routers.sessions as sessions_module
+    monkeypatch.setattr(sessions_module, "UPLOAD_DIR", tmp_path)
+
+    recipe = make_recipe(client, image_path="/uploads/imported.jpg")
+    session = client.post("/sessions/", json={"recipe_id": recipe["id"], "cooked_by": "michael"}).json()
+    client.post(
+        f"/sessions/{session['id']}/photo",
+        files={"file": ("dinner.jpg", io.BytesIO(b"fake-image-bytes"), "image/jpeg")},
+        data={"uploaded_by": "michael"},
+    )
+
+    fetched = client.get(f"/recipes/{recipe['id']}").json()
+    assert fetched["image_path"] == "/uploads/imported.jpg"  # column unchanged
+    assert fetched["cover_photo"].endswith(".jpg")
+    assert fetched["cover_photo"] != "/uploads/imported.jpg"  # the real photo wins
+
+
+def test_update_recipe_removes_replaced_cover_image_file(client, tmp_path, monkeypatch):
+    import app.routers.recipes as recipes_module
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    monkeypatch.setattr(recipes_module, "UPLOAD_DIR", upload_dir)
+    (upload_dir / "old.jpg").write_bytes(b"old-image")
+
+    recipe = make_recipe(client, image_path="/uploads/old.jpg")
+    resp = client.put(f"/recipes/{recipe['id']}", json={
+        "name": recipe["name"], "is_vegetarian": False, "is_vegan": False,
+        "image_path": None, "ingredients": [], "steps": [],
+    })
+    assert resp.status_code == 200
+    assert resp.json()["image_path"] is None
+    assert not (upload_dir / "old.jpg").exists()
+
+
+def test_delete_recipe_removes_imported_cover_image_file(client, tmp_path, monkeypatch):
+    import app.routers.recipes as recipes_module
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    monkeypatch.setattr(recipes_module, "UPLOAD_DIR", upload_dir)
+    (upload_dir / "cover.jpg").write_bytes(b"cover-image")
+
+    recipe = make_recipe(client, image_path="/uploads/cover.jpg")
+    assert client.delete(f"/recipes/{recipe['id']}").status_code == 204
+    assert not (upload_dir / "cover.jpg").exists()
+
+
 def test_delete_recipe_removes_uploaded_photo_files_from_disk(client, tmp_path, monkeypatch):
     import app.routers.recipes as recipes_module
     import app.routers.sessions as sessions_module

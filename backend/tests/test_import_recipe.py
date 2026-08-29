@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -7,18 +8,30 @@ import app.routers.import_recipe as import_recipe_module
 
 
 class FakeResponse:
-    def __init__(self, text):
+    def __init__(self, text="", content=b"", headers=None):
         self.text = text
+        self.content = content
+        self.headers = headers or {}
 
     def raise_for_status(self):
         pass
 
 
 class FakeAsyncClient:
-    """Stands in for httpx.AsyncClient so tests never hit the network."""
+    """Stands in for httpx.AsyncClient so tests never hit the network.
+
+    Serves `fetch_text` for the page GET; a request to `image_url` (if set)
+    gets `image_content` with an image content-type instead, so the cover-image
+    download path can be exercised offline.
+    """
 
     fetch_text = "<html>fake recipe page</html>"
     fetch_error = None
+    image_url = None
+    image_content = b"\xff\xd8\xff\xe0fake-jpeg-bytes"
+    image_content_type = "image/jpeg"
+    image_error = None
+    requested_urls: list = []
 
     def __init__(self, *args, **kwargs):
         pass
@@ -30,9 +43,17 @@ class FakeAsyncClient:
         return False
 
     async def get(self, url, headers=None):
+        FakeAsyncClient.requested_urls.append(url)
+        if self.image_url is not None and url == self.image_url:
+            if self.image_error:
+                raise self.image_error
+            return FakeResponse(
+                content=self.image_content,
+                headers={"content-type": self.image_content_type},
+            )
         if self.fetch_error:
             raise self.fetch_error
-        return FakeResponse(self.fetch_text)
+        return FakeResponse(text=self.fetch_text)
 
 
 class FakeAnthropicClient:
@@ -87,6 +108,11 @@ def _reset_fakes():
     yield
     FakeAsyncClient.fetch_text = "<html>fake recipe page</html>"
     FakeAsyncClient.fetch_error = None
+    FakeAsyncClient.image_url = None
+    FakeAsyncClient.image_content = b"\xff\xd8\xff\xe0fake-jpeg-bytes"
+    FakeAsyncClient.image_content_type = "image/jpeg"
+    FakeAsyncClient.image_error = None
+    FakeAsyncClient.requested_urls = []
     FakeAnthropicClient.reply_text = '{"name": "Test Recipe"}'
     FakeAnthropicClient.stop_reason = "end_turn"
     FakeAnthropicClient.last_user_content = None
@@ -185,3 +211,148 @@ def test_find_recipe_jsonld_handles_graph_and_list_wrappers():
     listed = '<script type="application/ld+json">[{"@type":"Organization"},{"@type":["Thing","Recipe"],"name":"L"}]</script>'
     assert find(listed)["name"] == "L"
     assert find("<html>no structured data</html>") is None
+
+
+# --- cover image extraction / download ---------------------------------------
+
+def test_first_image_ref_handles_string_object_and_list():
+    ref = import_recipe_module._first_image_ref
+    assert ref("https://img.example/a.jpg") == "https://img.example/a.jpg"
+    assert ref({"@type": "ImageObject", "url": "https://img.example/b.jpg"}) == "https://img.example/b.jpg"
+    assert ref(["https://img.example/c.jpg", "https://img.example/d.jpg"]) == "https://img.example/c.jpg"
+    assert ref([{"contentUrl": "https://img.example/e.jpg"}]) == "https://img.example/e.jpg"
+    assert ref(None) is None
+    assert ref([]) is None
+
+
+def test_extract_image_url_prefers_jsonld_then_og_image():
+    extract = import_recipe_module._extract_image_url
+    assert extract({"image": "https://img.example/ld.jpg"}, "<html></html>") == "https://img.example/ld.jpg"
+    og = '<html><head><meta property="og:image" content="https://img.example/og.jpg"></head></html>'
+    assert extract(None, og) == "https://img.example/og.jpg"
+    assert extract({"name": "no image key"}, og) == "https://img.example/og.jpg"
+    assert extract(None, "<html>nothing</html>") is None
+
+
+def _ld_with_image(image_json: str) -> str:
+    body = RECIPE_LD.replace('"name": "Griekse ovenschotel",', f'"name": "Griekse ovenschotel", "image": {image_json},')
+    return (
+        '<html><head>'
+        + ("<span>filler</span>" * 5000)
+        + '<script type="application/ld+json">' + body + "</script>"
+        + "</head><body>spa shell</body></html>"
+    )
+
+
+def test_import_downloads_cover_image_from_jsonld(client, monkeypatch, tmp_path):
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    monkeypatch.setattr(import_recipe_module, "UPLOAD_DIR", upload_dir)
+    _patch(
+        monkeypatch,
+        fetch_text=_ld_with_image('"https://img.example/dish.jpg"'),
+        reply_text='{"name": "Griekse ovenschotel", "steps": []}',
+    )
+    FakeAsyncClient.image_url = "https://img.example/dish.jpg"
+
+    resp = client.post("/import/", json={"url": "https://www.ah.nl/allerhande/recept/R-1"})
+    assert resp.status_code == 200
+    image_path = resp.json()["image_path"]
+    assert image_path.startswith("/uploads/") and image_path.endswith(".jpg")
+    saved = upload_dir / Path(image_path).name
+    assert saved.read_bytes() == FakeAsyncClient.image_content
+
+
+def test_import_uses_og_image_when_jsonld_has_none(client, monkeypatch, tmp_path):
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    monkeypatch.setattr(import_recipe_module, "UPLOAD_DIR", upload_dir)
+    page = (
+        '<html><head><meta property="og:image" content="https://img.example/og.png">'
+        '</head><body><h1>Soep</h1></body></html>'
+    )
+    _patch(monkeypatch, fetch_text=page, reply_text='{"name": "Soep", "steps": []}')
+    FakeAsyncClient.image_url = "https://img.example/og.png"
+    FakeAsyncClient.image_content_type = "image/png"
+
+    resp = client.post("/import/", json={"url": "https://blog.example/soep"})
+    assert resp.status_code == 200
+    assert resp.json()["image_path"].endswith(".png")
+
+
+def test_import_resolves_relative_image_url(client, monkeypatch, tmp_path):
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    monkeypatch.setattr(import_recipe_module, "UPLOAD_DIR", upload_dir)
+    _patch(
+        monkeypatch,
+        fetch_text=_ld_with_image('"/media/dish.jpg"'),
+        reply_text='{"name": "Griekse ovenschotel", "steps": []}',
+    )
+    FakeAsyncClient.image_url = "https://site.test/media/dish.jpg"
+
+    resp = client.post("/import/", json={"url": "https://site.test/recepten/ovenschotel"})
+    assert resp.status_code == 200
+    assert resp.json()["image_path"] is not None
+    assert "https://site.test/media/dish.jpg" in FakeAsyncClient.requested_urls
+
+
+def test_import_skips_non_image_content_type(client, monkeypatch, tmp_path):
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    monkeypatch.setattr(import_recipe_module, "UPLOAD_DIR", upload_dir)
+    _patch(
+        monkeypatch,
+        fetch_text=_ld_with_image('"https://img.example/dish.svg"'),
+        reply_text='{"name": "Griekse ovenschotel", "steps": []}',
+    )
+    FakeAsyncClient.image_url = "https://img.example/dish.svg"
+    FakeAsyncClient.image_content_type = "image/svg+xml"
+
+    resp = client.post("/import/", json={"url": "https://www.ah.nl/allerhande/recept/R-1"})
+    assert resp.status_code == 200
+    assert resp.json()["image_path"] is None
+    assert list(upload_dir.iterdir()) == []
+
+
+def test_import_survives_cover_image_download_failure(client, monkeypatch, tmp_path):
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    monkeypatch.setattr(import_recipe_module, "UPLOAD_DIR", upload_dir)
+    _patch(
+        monkeypatch,
+        fetch_text=_ld_with_image('"https://img.example/dish.jpg"'),
+        reply_text='{"name": "Griekse ovenschotel", "steps": []}',
+    )
+    FakeAsyncClient.image_url = "https://img.example/dish.jpg"
+    FakeAsyncClient.image_error = RuntimeError("connection reset")
+
+    resp = client.post("/import/", json={"url": "https://www.ah.nl/allerhande/recept/R-1"})
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "Griekse ovenschotel"
+    assert resp.json()["image_path"] is None
+
+
+def test_import_skips_oversized_cover_image(client, monkeypatch, tmp_path):
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    monkeypatch.setattr(import_recipe_module, "UPLOAD_DIR", upload_dir)
+    monkeypatch.setattr(import_recipe_module, "MAX_IMAGE_BYTES", 10)
+    _patch(
+        monkeypatch,
+        fetch_text=_ld_with_image('"https://img.example/huge.jpg"'),
+        reply_text='{"name": "Griekse ovenschotel", "steps": []}',
+    )
+    FakeAsyncClient.image_url = "https://img.example/huge.jpg"
+    FakeAsyncClient.image_content = b"x" * 999
+
+    resp = client.post("/import/", json={"url": "https://www.ah.nl/allerhande/recept/R-1"})
+    assert resp.status_code == 200
+    assert resp.json()["image_path"] is None
+
+
+def test_import_without_any_image_leaves_image_path_absent(client, monkeypatch):
+    _patch(monkeypatch, reply_text='{"name": "Imported Dish", "steps": []}')
+    resp = client.post("/import/", json={"url": "https://example.com/recipe"})
+    assert resp.status_code == 200
+    assert resp.json().get("image_path") is None

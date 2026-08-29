@@ -6,7 +6,10 @@ import { RecipeForm } from './RecipeForm'
 import { api } from '../lib/api'
 
 vi.mock('../lib/api', () => ({
-  api: { createRecipe: vi.fn(), getRecipe: vi.fn(), updateRecipe: vi.fn(), healthReview: vi.fn() },
+  api: {
+    createRecipe: vi.fn(), getRecipe: vi.fn(), updateRecipe: vi.fn(),
+    healthReview: vi.fn(), importUrl: vi.fn(),
+  },
 }))
 
 function renderForm() {
@@ -163,5 +166,66 @@ describe('RecipeForm step editor integration', () => {
 
     expect(await screen.findByDisplayValue('Snijd het vlees')).toBeInTheDocument()
     expect(screen.getByDisplayValue('Was de aardappelen')).toBeInTheDocument()
+  })
+})
+
+describe('RecipeForm imported cover image', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    api.createRecipe.mockResolvedValue({ id: 1 })
+    api.healthReview.mockResolvedValue({ id: 1 })
+  })
+
+  it('previews an imported image and submits its path', async () => {
+    api.importUrl.mockResolvedValue({
+      name: 'Griekse ovenschotel', ingredients: [], steps: [],
+      image_path: '/uploads/abc.jpg',
+    })
+    const user = userEvent.setup()
+    renderForm()
+
+    await user.type(screen.getByPlaceholderText('Plak een URL...'), 'https://ah.nl/recept')
+    await user.click(screen.getByRole('button', { name: 'Import' }))
+
+    const preview = await screen.findByRole('img')
+    expect(preview).toHaveAttribute('src', '/uploads/abc.jpg')
+
+    await user.click(screen.getByRole('button', { name: /Recept aanmaken/ }))
+    expect(api.createRecipe).toHaveBeenCalledWith(
+      expect.objectContaining({ image_path: '/uploads/abc.jpg' })
+    )
+  })
+
+  it('drops the image when the remove button is clicked', async () => {
+    api.importUrl.mockResolvedValue({
+      name: 'Griekse ovenschotel', ingredients: [], steps: [],
+      image_path: '/uploads/abc.jpg',
+    })
+    const user = userEvent.setup()
+    renderForm()
+
+    await user.type(screen.getByPlaceholderText('Plak een URL...'), 'https://ah.nl/recept')
+    await user.click(screen.getByRole('button', { name: 'Import' }))
+    await screen.findByRole('img')
+
+    await user.click(screen.getByRole('button', { name: 'Afbeelding verwijderen' }))
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /Recept aanmaken/ }))
+    expect(api.createRecipe).toHaveBeenCalledWith(
+      expect.objectContaining({ image_path: null })
+    )
+  })
+
+  it('sends image_path: null when nothing was imported', async () => {
+    const user = userEvent.setup()
+    renderForm()
+
+    await user.type(inputNear('Naam *'), 'Soep')
+    await user.click(screen.getByRole('button', { name: /Recept aanmaken/ }))
+
+    expect(api.createRecipe).toHaveBeenCalledWith(
+      expect.objectContaining({ image_path: null })
+    )
   })
 })
