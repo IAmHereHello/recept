@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlite3 import Connection
 from datetime import date, timedelta
+from typing import Optional
 from app.database import get_db
 from app.health import grade as health_grade
-from app.models import MealPlanEntry, GroceryRequest, SideDishIn
+from app.models import MealPlanEntry, GroceryRequest, SideDishIn, SuggestIn
 
 router = APIRouter(prefix="/plan", tags=["planner"])
 
@@ -32,8 +33,28 @@ def _day_date(week_start: str, day: str) -> date:
     return date.fromisoformat(week_start) + timedelta(days=DAYS.index(day))
 
 
+def _recent_planned_dates(conn: Connection, before: date, cutoff: date) -> dict[int, str]:
+    """recipe_id -> most recent meal_plan date that is on/after `cutoff` and
+    strictly before `before`. A dish that was on the menu recently is treated
+    like a real cook session for cooldown scoring — you presumably ate it.
+    """
+    out: dict[int, str] = {}
+    for row in conn.execute(
+        "SELECT recipe_id, week_start, day FROM meal_plan WHERE recipe_id IS NOT NULL"
+    ).fetchall():
+        d = _day_date(row["week_start"], row["day"])
+        if cutoff <= d < before:
+            iso = d.isoformat()
+            if row["recipe_id"] not in out or iso > out[row["recipe_id"]]:
+                out[row["recipe_id"]] = iso
+    return out
+
+
 def _score_recipes(conn: Connection, week_start: str) -> list[dict]:
-    cutoff = (date.fromisoformat(week_start) - timedelta(days=COOLDOWN_DAYS)).isoformat()
+    ws_date = date.fromisoformat(week_start)
+    cutoff_date = ws_date - timedelta(days=COOLDOWN_DAYS)
+    cutoff = cutoff_date.isoformat()
+    recent_planned = _recent_planned_dates(conn, before=ws_date, cutoff=cutoff_date)
     rows = conn.execute("""
         SELECT
             r.id,
@@ -57,8 +78,12 @@ def _score_recipes(conn: Connection, week_start: str) -> list[dict]:
         score = r["avg_stars"] or 3.0
         if r["rating_count"] == 0:
             score += 0.5  # boost unrated (try new dishes)
-        if r["last_cooked"] and r["last_cooked"] >= cutoff:
-            score -= 1.5  # soft cooldown penalty
+        last_activity = max(
+            (v for v in (r["last_cooked"], recent_planned.get(r["id"])) if v),
+            default=None,
+        )
+        if last_activity and last_activity >= cutoff:
+            score -= 1.5  # soft cooldown penalty (real cook OR a recent plan entry)
         if r["health_score"] is not None:
             score += ((r["health_score"] - 50) / 50) * HEALTH_WEIGHT  # gentle health nudge
         r["health_grade"] = health_grade(r["health_score"])
@@ -67,6 +92,41 @@ def _score_recipes(conn: Connection, week_start: str) -> list[dict]:
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored
+
+
+def sync_cooked_meal(conn: Connection, recipe_id: int, when: date) -> Optional[dict]:
+    """Reflect a just-cooked or retroactively-logged meal onto that day's plan.
+
+    - locked day, or the day already holds this same recipe: no-op -> None
+    - empty day: fill it -> None
+    - a *different* unlocked meal already planned: leave it, return a conflict
+      dict so the caller can ask the user whether to overwrite
+    """
+    ws = (when - timedelta(days=when.weekday())).isoformat()
+    day = DAYS[when.weekday()]
+    row = conn.execute(
+        "SELECT recipe_id, locked FROM meal_plan WHERE week_start=? AND day=?", (ws, day)
+    ).fetchone()
+    if row and row["locked"]:
+        return None
+    if row and row["recipe_id"] == recipe_id:
+        return None
+    if row and row["recipe_id"] is not None:
+        def _name(rid):
+            hit = conn.execute("SELECT name FROM recipes WHERE id=?", (rid,)).fetchone()
+            return hit["name"] if hit else None
+        return {
+            "week_start": ws, "day": day,
+            "existing_recipe_id": row["recipe_id"], "existing_recipe_name": _name(row["recipe_id"]),
+            "cooked_recipe_id": recipe_id, "cooked_recipe_name": _name(recipe_id),
+        }
+    conn.execute(
+        """INSERT INTO meal_plan (week_start, day, recipe_id, locked, freezer_item_id)
+           VALUES (?,?,?,0,NULL)
+           ON CONFLICT(week_start, day) DO UPDATE SET recipe_id=excluded.recipe_id""",
+        (ws, day, recipe_id),
+    )
+    return None
 
 
 def _freezer_candidates(conn: Connection, week_start: str) -> list[dict]:
@@ -131,18 +191,34 @@ def get_week(week_start: str, conn: Connection = Depends(get_db)):
     return result
 
 
-@router.post("/suggest/{week_start}")
-def suggest_week(week_start: str, vegetarian_only: bool = False, conn: Connection = Depends(get_db)):
-    ws = _week_start(week_start)
-    locked = conn.execute(
-        "SELECT day, recipe_id FROM meal_plan WHERE week_start = ? AND locked = 1", (ws,)
+def _week_plan_state(conn: Connection, ws: str):
+    rows = conn.execute(
+        "SELECT day, recipe_id, locked FROM meal_plan WHERE week_start = ?", (ws,)
     ).fetchall()
-    locked_days = {row["day"] for row in locked}
-    locked_recipe_ids = {row["recipe_id"] for row in locked}
-    open_days = [d for d in DAYS if d not in locked_days]
+    locked_days = {r["day"] for r in rows if r["locked"]}
+    filled_days = {r["day"] for r in rows if r["recipe_id"] is not None}
+    # Everything already on this week's menu (locked or not) is off the table —
+    # you don't want the same dish suggested twice in one week.
+    planned_recipe_ids = {r["recipe_id"] for r in rows if r["recipe_id"] is not None}
+    return locked_days, filled_days, planned_recipe_ids
+
+
+@router.post("/suggest/{week_start}")
+def suggest_week(
+    week_start: str,
+    vegetarian_only: bool = False,
+    body: Optional[SuggestIn] = None,
+    conn: Connection = Depends(get_db),
+):
+    ws = _week_start(week_start)
+    exclude_ids = set(body.exclude_recipe_ids) if body else set()
+    locked_days, filled_days, planned_recipe_ids = _week_plan_state(conn, ws)
+    # Only suggest for days that are neither locked nor already filled, so
+    # re-rolling after applying a few suggestions only touches what's still open.
+    open_days = [d for d in DAYS if d not in locked_days and d not in filled_days]
 
     suggestions: dict = {}
-    used_ids: set = set()
+    used_ids: set = set(exclude_ids)  # rejected recipes never come back this round
 
     # Priority pass: freezer batches nearing expiry get first claim on open
     # days (soonest-expiring -> earliest open day), ahead of normal scoring.
@@ -153,7 +229,7 @@ def suggest_week(week_start: str, vegetarian_only: bool = False, conn: Connectio
     fc_idx = 0
     for day in open_days:
         while fc_idx < len(freezer_candidates) and (
-            freezer_candidates[fc_idx]["recipe_id"] in locked_recipe_ids
+            freezer_candidates[fc_idx]["recipe_id"] in planned_recipe_ids
             or freezer_candidates[fc_idx]["recipe_id"] in used_ids
         ):
             fc_idx += 1
@@ -171,7 +247,7 @@ def suggest_week(week_start: str, vegetarian_only: bool = False, conn: Connectio
     scored = _score_recipes(conn, ws)
     if vegetarian_only:
         scored = [r for r in scored if r["is_vegetarian"]]
-    available = [r for r in scored if r["id"] not in locked_recipe_ids and r["id"] not in used_ids]
+    available = [r for r in scored if r["id"] not in planned_recipe_ids and r["id"] not in used_ids]
 
     idx = 0
     for day in open_days:
@@ -186,6 +262,33 @@ def suggest_week(week_start: str, vegetarian_only: bool = False, conn: Connectio
         else:
             suggestions[day] = None
     return suggestions
+
+
+@router.post("/suggest/{week_start}/{day}")
+def suggest_day(
+    week_start: str,
+    day: str,
+    vegetarian_only: bool = False,
+    body: Optional[SuggestIn] = None,
+    conn: Connection = Depends(get_db),
+):
+    """Re-roll a single day — the best-scoring recipe not already on this
+    week's menu and not in the caller's reject list. Normal scoring only
+    (freezer batches only surface via the full 'Suggesties' run)."""
+    ws = _week_start(week_start)
+    if day not in DAYS:
+        raise HTTPException(404, "Unknown day")
+    exclude_ids = set(body.exclude_recipe_ids) if body else set()
+    _, _, planned_recipe_ids = _week_plan_state(conn, ws)
+
+    scored = _score_recipes(conn, ws)
+    if vegetarian_only:
+        scored = [r for r in scored if r["is_vegetarian"]]
+    for r in scored:
+        if r["id"] in planned_recipe_ids or r["id"] in exclude_ids:
+            continue
+        return {**r, "from_freezer": False}
+    return None
 
 
 @router.put("/{week_start}/{day}")

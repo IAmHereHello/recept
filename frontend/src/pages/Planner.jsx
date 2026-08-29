@@ -2,8 +2,10 @@ import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
 import { HealthBadge } from '../components/HealthBadge'
+import { PlanConflictDialog } from '../components/PlanConflictDialog'
+import { getUser } from '../lib/user'
 import {
-  ChevronLeft, ChevronRight, Sparkles, Lock, Unlock, ShoppingCart, X, ChefHat, Snowflake
+  ChevronLeft, ChevronRight, Sparkles, Lock, Unlock, ShoppingCart, X, ChefHat, Snowflake, RefreshCw, CalendarPlus
 } from 'lucide-react'
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
@@ -38,14 +40,18 @@ export function Planner() {
   const weekStart = toISO(weekDate)
   const [plan, setPlan] = useState({})
   const [suggestions, setSuggestions] = useState(null)
+  const [rejected, setRejected] = useState([]) // recipe ids rejected this suggestion round
+  const [suggestBusy, setSuggestBusy] = useState(false)
   const [recipes, setRecipes] = useState([])
-  const [picker, setPicker] = useState(null) // { day, mode: 'main' | 'side' }
+  const [picker, setPicker] = useState(null) // { day, mode: 'main' | 'side' | 'log' }
   const [vegOnly, setVegOnly] = useState(false)
   const [loading, setLoading] = useState(true)
   const [grocery, setGrocery] = useState(null)
   const [search, setSearch] = useState('')
   const [shareStatus, setShareStatus] = useState('')
   const [freezerConsumeTarget, setFreezerConsumeTarget] = useState(null) // { day, item: entry.freezer, freezerItemId, portions }
+  const [planConflict, setPlanConflict] = useState(null)
+  const me = getUser()
 
   useEffect(() => {
     setLoading(true)
@@ -54,11 +60,54 @@ export function Planner() {
       api.getRecipes().then(setRecipes),
     ]).finally(() => setLoading(false))
     setSuggestions(null)
+    setRejected([])
   }, [weekStart])
 
+  const visibleSuggestionIds = () =>
+    Object.values(suggestions || {}).filter(Boolean).map(s => s.id)
+
   async function suggest() {
-    const s = await api.suggestWeek(weekStart, vegOnly)
-    setSuggestions(s)
+    setSuggestBusy(true)
+    try {
+      setRejected([])
+      setSuggestions(await api.suggestWeek(weekStart, vegOnly, []))
+    } finally {
+      setSuggestBusy(false)
+    }
+  }
+
+  async function reroll() {
+    setSuggestBusy(true)
+    try {
+      const nextRejected = [...new Set([...rejected, ...visibleSuggestionIds()])]
+      setRejected(nextRejected)
+      setSuggestions(await api.suggestWeek(weekStart, vegOnly, nextRejected))
+    } finally {
+      setSuggestBusy(false)
+    }
+  }
+
+  async function rerollDay(day) {
+    const current = suggestions?.[day]
+    const exclude = [...new Set([...rejected, ...visibleSuggestionIds()])]
+    const pick = await api.suggestDay(weekStart, day, vegOnly, exclude)
+    if (current) setRejected(r => [...new Set([...r, current.id])])
+    setSuggestions(s => ({ ...s, [day]: pick }))
+  }
+
+  async function refetchWeek() {
+    setPlan(await api.getWeek(weekStart))
+  }
+
+  async function logMeal(day, recipe) {
+    const res = await api.logMeal({
+      recipe_id: recipe.id,
+      cooked_at: dayISO(weekDate, day),
+      cooked_by: me,
+    })
+    setPicker(null)
+    if (res.plan_conflict) setPlanConflict(res.plan_conflict)
+    else await refetchWeek()
   }
 
   async function applySuggestion(day) {
@@ -141,6 +190,7 @@ export function Planner() {
 
   function selectPickerRecipe(r) {
     if (picker.mode === 'side') return addSide(picker.day, r)
+    if (picker.mode === 'log') return logMeal(picker.day, r)
     return pickRecipe(picker.day, r)
   }
 
@@ -184,6 +234,9 @@ export function Planner() {
     (picker?.mode === 'side' ? r.is_side_dish : !r.is_side_dish && !r.is_baking)
   )
 
+  const PICKER_TITLE = { side: 'Kies bijgerecht', log: 'Wat hebben jullie gegeten?', main: 'Kies gerecht' }
+  const gradeFor = (recipeId) => recipes.find(r => r.id === recipeId)?.health_grade
+
   return (
     <div className="w-full p-4 pb-28 max-w-lg mx-auto">
       <div className="flex items-center justify-between mt-4 mb-4">
@@ -207,20 +260,30 @@ export function Planner() {
         </label>
       </div>
 
-      <div className="flex gap-2 mb-6">
+      <div className="flex gap-2 mb-6 flex-wrap">
         <button
           onClick={suggest}
-          className="flex items-center gap-2 bg-green-600 text-white px-3 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition"
+          disabled={suggestBusy}
+          className="flex items-center gap-2 bg-green-600 text-white px-3 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition"
         >
           <Sparkles size={14} /> Suggesties
         </button>
         {suggestions && (
-          <button
-            onClick={applyAllSuggestions}
-            className="flex items-center gap-2 border border-green-600 text-green-700 px-3 py-2 rounded-lg text-sm font-medium hover:bg-green-50 transition"
-          >
-            Alles toepassen
-          </button>
+          <>
+            <button
+              onClick={reroll}
+              disabled={suggestBusy}
+              className="flex items-center gap-2 border border-green-600 text-green-700 px-3 py-2 rounded-lg text-sm font-medium hover:bg-green-50 disabled:opacity-50 transition"
+            >
+              <RefreshCw size={14} className={suggestBusy ? 'animate-spin' : ''} /> Andere suggesties
+            </button>
+            <button
+              onClick={applyAllSuggestions}
+              className="flex items-center gap-2 border border-green-600 text-green-700 px-3 py-2 rounded-lg text-sm font-medium hover:bg-green-50 transition"
+            >
+              Alles toepassen
+            </button>
+          </>
         )}
         <Link
           to="/vriezer"
@@ -272,12 +335,18 @@ export function Planner() {
                     <Link to={`/recipes/${recipeId}`} className="text-sm font-medium text-gray-900 hover:text-green-600 flex-1">
                       {recipeName}
                     </Link>
+                    <HealthBadge grade={gradeFor(recipeId)} />
                     {Boolean(entry?.locked) && <Lock size={12} className="text-green-600" />}
                   </div>
                 ) : isPast ? (
-                  <div className="text-sm text-gray-300 italic">Geen gerecht</div>
+                  <button
+                    onClick={() => { setPicker({ day, mode: 'log' }); setSearch('') }}
+                    className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-green-600 transition"
+                  >
+                    <CalendarPlus size={13} /> Achteraf toevoegen
+                  </button>
                 ) : (
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <button
                       onClick={() => { setPicker({ day, mode: 'main' }); setSearch('') }}
                       className="text-sm text-gray-400 hover:text-green-600 transition"
@@ -297,11 +366,16 @@ export function Planner() {
                         {suggestion.health_grade && <HealthBadge grade={suggestion.health_grade} />}
                       </button>
                     )}
+                    {suggestion && !suggestion.from_freezer && !entry?.locked && (
+                      <button
+                        onClick={() => rerollDay(day)}
+                        title="Andere suggestie voor deze dag"
+                        className="p-1 text-gray-300 hover:text-green-600 transition"
+                      >
+                        <RefreshCw size={12} />
+                      </button>
+                    )}
                   </div>
-                )}
-
-                {suggestion && recipeName && !isPast && (
-                  <div className="text-xs text-gray-400 mt-1">Suggestie: {suggestion.name}</div>
                 )}
 
                 {entry?.freezer_item_id && entry?.freezer && (
@@ -356,7 +430,7 @@ export function Planner() {
           <div className="bg-white w-full max-w-lg mx-auto rounded-t-2xl p-4 max-h-[70vh] flex flex-col">
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-semibold text-gray-900">
-                {picker.mode === 'side' ? 'Kies bijgerecht' : 'Kies gerecht'} — {DAY_LABELS[picker.day]}
+                {PICKER_TITLE[picker.mode] || 'Kies gerecht'} — {DAY_LABELS[picker.day]}
               </h3>
               <button onClick={() => setPicker(null)}><X size={20} className="text-gray-500" /></button>
             </div>
@@ -456,6 +530,11 @@ export function Planner() {
           </div>
         </div>
       )}
+
+      <PlanConflictDialog
+        conflict={planConflict}
+        onClose={() => { setPlanConflict(null); refetchWeek() }}
+      />
     </div>
   )
 }

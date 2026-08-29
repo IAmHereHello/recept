@@ -95,6 +95,15 @@ class PendingStepConfirmationOut(BaseModel):
     avg_seconds: float
 
 
+class PlanConflictOut(BaseModel):
+    week_start: str
+    day: str
+    existing_recipe_id: int
+    existing_recipe_name: Optional[str] = None
+    cooked_recipe_id: int
+    cooked_recipe_name: Optional[str] = None
+
+
 class CookSessionOut(BaseModel):
     id: int
     recipe_id: int
@@ -111,6 +120,9 @@ class CookSessionOut(BaseModel):
     pending_step_confirmation: Optional[PendingStepConfirmationOut] = None
     ratings: List[dict] = []
     photos: List[PhotoOut] = []
+    # Set only by /finish and /log when the cooked meal's day already held a
+    # different, unlocked meal — the client asks the user before overwriting.
+    plan_conflict: Optional[PlanConflictOut] = None
 
 
 class StepAdvanceIn(BaseModel):
@@ -184,8 +196,21 @@ class MealPlanEntry(BaseModel):
     freezer_item_id: Optional[int] = None
 
 
+class SuggestIn(BaseModel):
+    # Recipes the user has already seen and rejected this planning round — the
+    # "andere suggesties" / per-day 🔄 re-roll passes these so the next pick is
+    # genuinely different instead of the same deterministic top scorer.
+    exclude_recipe_ids: List[int] = []
+
+
 class SideDishIn(BaseModel):
     recipe_id: int
+
+
+class LogMealIn(BaseModel):
+    recipe_id: int
+    cooked_at: str  # ISO date or datetime — the day the meal was eaten
+    cooked_by: Optional[User] = None
 
 
 class ImportUrlRequest(BaseModel):
@@ -230,6 +255,10 @@ class DashboardStatusOut(BaseModel):
     cooking_active: bool
     cooking_recipe_id: int = 0
     cooking_recipe_name: str = ""
+    # URL path (served by the /uploads static mount, no auth) to the raw image
+    # bytes of the recipe being cooked. Only set while cooking_active is true and
+    # that recipe actually has a photo; null otherwise.
+    cooking_recipe_image_path: Optional[str] = None
     cook_time_remaining_seconds: int = 0
     planned_today_recipe_id: int = 0
     planned_today_recipe_name: str = ""

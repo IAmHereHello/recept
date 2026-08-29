@@ -33,6 +33,7 @@ export const api = {
   // Cook sessions
   getSessions: (recipeId) => req('GET', `/sessions/recipe/${recipeId}`),
   createSession: (data) => req('POST', '/sessions/', data),
+  logMeal: (data) => req('POST', '/sessions/log', data),
   rateSession: (sessionId, data) => req('POST', `/sessions/${sessionId}/rate`, data),
   deleteRating: (sessionId, user) => req('DELETE', `/sessions/${sessionId}/rate/${user}`),
   getPendingReviews: (user) => req('GET', `/sessions/pending/${user}`),
@@ -58,8 +59,10 @@ export const api = {
 
   // Planner
   getWeek: (weekStart) => req('GET', `/plan/${weekStart}`),
-  suggestWeek: (weekStart, vegetarianOnly = false) =>
-    req('POST', `/plan/suggest/${weekStart}?vegetarian_only=${vegetarianOnly}`),
+  suggestWeek: (weekStart, vegetarianOnly = false, excludeRecipeIds = []) =>
+    req('POST', `/plan/suggest/${weekStart}?vegetarian_only=${vegetarianOnly}`, { exclude_recipe_ids: excludeRecipeIds }),
+  suggestDay: (weekStart, day, vegetarianOnly = false, excludeRecipeIds = []) =>
+    req('POST', `/plan/suggest/${weekStart}/${day}?vegetarian_only=${vegetarianOnly}`, { exclude_recipe_ids: excludeRecipeIds }),
   setDay: (weekStart, day, data) => req('PUT', `/plan/${weekStart}/${day}`, data),
   clearDay: (weekStart, day) => req('DELETE', `/plan/${weekStart}/${day}`),
   getGroceries: (weekStart) => req('POST', '/plan/grocery', { week_start: weekStart }),

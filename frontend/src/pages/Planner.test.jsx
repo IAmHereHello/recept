@@ -21,12 +21,14 @@ vi.mock('../lib/api', () => ({
     getWeek: vi.fn(),
     getRecipes: vi.fn(),
     suggestWeek: vi.fn(),
+    suggestDay: vi.fn(),
     setDay: vi.fn(),
     clearDay: vi.fn(),
     getGroceries: vi.fn(),
     addSideDish: vi.fn(),
     removeSideDish: vi.fn(),
     consumeFreezerItem: vi.fn(),
+    logMeal: vi.fn(),
   },
 }))
 
@@ -168,11 +170,28 @@ describe('Planner past days', () => {
     expect(within(wedCard).getAllByRole('button').length).toBeGreaterThan(0) // lock + clear icons
   })
 
-  it('shows a static placeholder instead of "kies gerecht" for an empty past day', async () => {
+  it('offers "achteraf toevoegen" instead of "kies gerecht" for an empty past day', async () => {
     renderPlanner()
     await screen.findByText('Monday Dish')
 
-    expect(screen.getByText('Geen gerecht')).toBeInTheDocument() // Tuesday, past, no recipe
+    const tuesdayCard = screen.getByText('Dinsdag').closest('.rounded-xl')
+    expect(within(tuesdayCard).getByText('Achteraf toevoegen')).toBeInTheDocument()
+    expect(within(tuesdayCard).queryByText('+ Kies gerecht')).not.toBeInTheDocument()
+  })
+
+  it('logs a retroactive meal for a past day and refetches the week', async () => {
+    api.logMeal.mockResolvedValue({ plan_conflict: null })
+    const user = userEvent.setup()
+    renderPlanner()
+    await screen.findByText('Monday Dish')
+
+    await user.click(screen.getByText('Achteraf toevoegen'))
+    const modal = (await screen.findByText('Wat hebben jullie gegeten? — Dinsdag')).closest('div.fixed')
+    await user.click(within(modal).getByText('Monday Dish'))
+
+    expect(api.logMeal).toHaveBeenCalledWith(
+      expect.objectContaining({ recipe_id: 1, cooked_at: '2026-01-06' })
+    )
   })
 })
 
@@ -390,5 +409,47 @@ describe('Planner suggestion health grade', () => {
 
     const chip = (await screen.findByText(/Bowl/)).closest('button')
     expect(within(chip).getByText('A')).toBeInTheDocument()
+  })
+})
+
+describe('Planner suggestion re-roll', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-01-05T12:00:00'))
+    api.getRecipes.mockResolvedValue([{ id: 1, name: 'A' }, { id: 2, name: 'B' }])
+    api.getWeek.mockResolvedValue(EMPTY_WEEK)
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it('"Andere suggesties" re-requests excluding the recipes currently shown', async () => {
+    const user = userEvent.setup()
+    api.suggestWeek
+      .mockResolvedValueOnce({ mon: { id: 1, name: 'A', from_freezer: false }, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null })
+      .mockResolvedValueOnce({ mon: { id: 2, name: 'B', from_freezer: false }, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null })
+    renderPlanner()
+    await screen.findByText('Maandag')
+
+    await user.click(screen.getByRole('button', { name: /Suggesties/ }))
+    await screen.findByText(/✨ A/)
+    await user.click(screen.getByRole('button', { name: /Andere suggesties/ }))
+
+    expect(api.suggestWeek).toHaveBeenLastCalledWith('2026-01-05', false, [1])
+    expect(await screen.findByText(/✨ B/)).toBeInTheDocument()
+  })
+
+  it('per-day 🔄 swaps a single day via suggestDay', async () => {
+    const user = userEvent.setup()
+    api.suggestWeek.mockResolvedValue({ mon: { id: 1, name: 'A', from_freezer: false }, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null })
+    api.suggestDay.mockResolvedValue({ id: 2, name: 'B', from_freezer: false })
+    renderPlanner()
+    await screen.findByText('Maandag')
+
+    await user.click(screen.getByRole('button', { name: /Suggesties/ }))
+    const monCard = (await screen.findByText(/✨ A/)).closest('.rounded-xl')
+    await user.click(within(monCard).getByTitle('Andere suggestie voor deze dag'))
+
+    expect(api.suggestDay).toHaveBeenCalledWith('2026-01-05', 'mon', false, [1])
+    expect(await screen.findByText(/✨ B/)).toBeInTheDocument()
   })
 })

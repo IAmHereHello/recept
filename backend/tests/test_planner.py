@@ -65,6 +65,57 @@ def test_suggest_boosts_unrated_and_penalizes_recently_cooked(client):
     assert suggested_ids.index(fresh["id"]) < suggested_ids.index(stale["id"])
 
 
+def test_suggest_only_fills_empty_unlocked_days(client):
+    a = make_recipe(client, name="A")
+    make_recipe(client, name="B")
+    ws = "2026-01-05"
+    client.put(f"/plan/{ws}/mon", json={"week_start": ws, "day": "mon", "recipe_id": a["id"], "locked": False})
+
+    suggestions = client.post(f"/plan/suggest/{ws}").json()
+    assert "mon" not in suggestions  # already has a meal -> not re-suggested
+    assert a["id"] not in [s["id"] for s in suggestions.values() if s]  # not suggested elsewhere either
+
+
+def test_suggest_reroll_excludes_rejected_recipes(client):
+    a = make_recipe(client, name="Appeltaart-stoof")
+    b = make_recipe(client, name="Bietenschotel")
+    ws = "2026-01-05"
+
+    first = client.post(f"/plan/suggest/{ws}").json()
+    mon_pick = first["mon"]["id"]
+
+    rerolled = client.post(f"/plan/suggest/{ws}", json={"exclude_recipe_ids": [mon_pick]}).json()
+    assert rerolled["mon"]["id"] != mon_pick
+    assert mon_pick not in [s["id"] for s in rerolled.values() if s]
+
+
+def test_suggest_day_rerolls_a_single_day(client):
+    a = make_recipe(client, name="A")
+    b = make_recipe(client, name="B")
+    ws = "2026-01-05"
+
+    pick = client.post(f"/plan/suggest/{ws}/wed").json()
+    assert pick["id"] in (a["id"], b["id"])
+
+    other = client.post(f"/plan/suggest/{ws}/wed", json={"exclude_recipe_ids": [pick["id"]]}).json()
+    assert other["id"] != pick["id"]
+
+    exhausted = client.post(f"/plan/suggest/{ws}/wed", json={"exclude_recipe_ids": [a["id"], b["id"]]}).json()
+    assert exhausted is None
+
+
+def test_recent_plan_entry_penalises_like_a_cooldown(client):
+    planned_before = make_recipe(client, name="Recent op menu")
+    fresh = make_recipe(client, name="Nog niet gehad")
+    # planned last week (within the 14-day cooldown window of the 2026-01-12 week)
+    client.put("/plan/2026-01-05/wed", json={"week_start": "2026-01-05", "day": "wed", "recipe_id": planned_before["id"], "locked": False})
+
+    suggestions = client.post("/plan/suggest/2026-01-12").json()
+    order = [s["id"] for s in suggestions.values() if s]
+    # both unrated (3.5); planned_before drops to 2.0, fresh stays 3.5
+    assert order.index(fresh["id"]) < order.index(planned_before["id"])
+
+
 def test_suggest_nudges_toward_healthier_recipe(client):
     healthy = make_recipe(client, name="Salade")
     junk = make_recipe(client, name="Frituur")

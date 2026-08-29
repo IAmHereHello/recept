@@ -4,10 +4,13 @@ import { api } from '../lib/api'
 import { getUser } from '../lib/user'
 import { StarRating } from '../components/StarRating'
 import { Badge } from '../components/Badge'
-import { HealthBadge } from '../components/HealthBadge'
+import { HealthBadge, HealthScale } from '../components/HealthBadge'
+import { PlanConflictDialog } from '../components/PlanConflictDialog'
 import {
-  Clock, ChefHat, Pencil, Trash2, Play, X, Users, Search, ChevronDown, Leaf, Loader2
+  Clock, ChefHat, Pencil, Trash2, Play, X, Users, Search, ChevronDown, Leaf, Loader2, CalendarPlus
 } from 'lucide-react'
+
+const todayISO = () => new Date().toLocaleDateString('sv-SE') // YYYY-MM-DD, local
 
 const DIFF_LABELS = { easy: 'Makkelijk', medium: 'Gemiddeld', hard: 'Moeilijk' }
 
@@ -26,6 +29,12 @@ export function RecipeDetail() {
   const [showHealth, setShowHealth] = useState(false)
   const [healthReviewing, setHealthReviewing] = useState(false)
   const [healthError, setHealthError] = useState('')
+  const [showLogMeal, setShowLogMeal] = useState(false)
+  const [logDate, setLogDate] = useState(todayISO)
+  const [logBy, setLogBy] = useState(null)
+  const [logging, setLogging] = useState(false)
+  const [logError, setLogError] = useState('')
+  const [planConflict, setPlanConflict] = useState(null)
   const me = getUser()
 
   const load = useCallback(() => Promise.all([
@@ -94,6 +103,28 @@ export function RecipeDetail() {
     if (!confirm(`"${recipe.name}" verwijderen?`)) return
     await api.deleteRecipe(id)
     navigate('/recipes')
+  }
+
+  function openLogMeal() {
+    setLogDate(todayISO())
+    setLogBy(me)
+    setLogError('')
+    setShowLogMeal(true)
+  }
+
+  async function submitLogMeal() {
+    setLogging(true)
+    setLogError('')
+    try {
+      const res = await api.logMeal({ recipe_id: Number(id), cooked_at: logDate, cooked_by: logBy || me })
+      setShowLogMeal(false)
+      if (res.plan_conflict) setPlanConflict(res.plan_conflict)
+      await load()
+    } catch (e) {
+      setLogError(e.message)
+    } finally {
+      setLogging(false)
+    }
   }
 
   async function runHealthReview() {
@@ -179,6 +210,9 @@ export function RecipeDetail() {
 
           {showHealth && (
             <div className="mt-2 bg-gray-50 rounded-xl p-3 text-sm">
+              <div className="mb-3">
+                <HealthScale grade={recipe.health_grade} />
+              </div>
               {recipe.health_rationale
                 ? <p className="text-gray-600">{recipe.health_rationale}</p>
                 : <p className="text-gray-400 italic">Nog geen beoordeling. Laat de AI dit recept beoordelen.</p>}
@@ -260,7 +294,7 @@ export function RecipeDetail() {
         )}
 
         <div className="border-t border-gray-100 pt-6">
-          <div className="flex items-center justify-between mb-4 gap-2">
+          <div className="flex items-center justify-between mb-2 gap-2">
             <h2 className="text-base font-semibold text-gray-900">Kooksessies</h2>
             <div className="flex gap-2">
               <button
@@ -279,6 +313,12 @@ export function RecipeDetail() {
               </button>
             </div>
           </div>
+          <button
+            onClick={openLogMeal}
+            className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-green-600 transition mb-4"
+          >
+            <CalendarPlus size={14} /> Al gekookt (achteraf toevoegen)
+          </button>
 
           {sessions.map(s => (
             <div key={s.id} className="border border-gray-100 rounded-xl p-3 mb-3 bg-white">
@@ -385,6 +425,58 @@ export function RecipeDetail() {
           </div>
         </div>
       )}
+
+      {showLogMeal && (
+        <div className="fixed inset-0 bg-black/40 z-[60] flex items-end">
+          <div className="bg-white w-full max-w-lg mx-auto rounded-t-2xl p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-gray-900">Al gekookt — {recipe.name}</h3>
+              <button onClick={() => setShowLogMeal(false)}><X size={20} className="text-gray-500" /></button>
+            </div>
+            {logError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg p-2 mb-3">{logError}</div>
+            )}
+            <label className="block text-sm font-medium text-gray-700 mb-1">Wanneer gegeten?</label>
+            <input
+              type="date"
+              value={logDate}
+              max={todayISO()}
+              onChange={e => setLogDate(e.target.value)}
+              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-green-500"
+            />
+            <label className="block text-sm font-medium text-gray-700 mb-1">Wie kookte?</label>
+            <div className="flex gap-2 mb-4">
+              {['michael', 'rachel'].map(u => (
+                <button
+                  key={u}
+                  onClick={() => setLogBy(u)}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium border capitalize transition ${
+                    (logBy || me) === u ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-200'
+                  }`}
+                >
+                  {u}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={submitLogMeal}
+              disabled={logging || !logDate}
+              className="w-full bg-green-600 text-white py-2.5 rounded-xl text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition flex items-center justify-center gap-2"
+            >
+              {logging && <Loader2 size={14} className="animate-spin" />}
+              Toevoegen
+            </button>
+            <p className="text-xs text-gray-400 mt-2">
+              Wordt op de planning van die dag gezet en jullie krijgen allebei een beoordeling.
+            </p>
+          </div>
+        </div>
+      )}
+
+      <PlanConflictDialog
+        conflict={planConflict}
+        onClose={() => { setPlanConflict(null); load() }}
+      />
     </div>
   )
 }

@@ -19,6 +19,8 @@ vi.mock('../lib/api', () => ({
     getRecipes: vi.fn(),
     createSessionGroup: vi.fn(),
     healthReview: vi.fn(),
+    logMeal: vi.fn(),
+    setDay: vi.fn(),
   },
 }))
 
@@ -295,5 +297,55 @@ describe('RecipeDetail healthiness', () => {
 
     expect(api.healthReview).toHaveBeenCalledWith('1')
     expect(await screen.findByText(/88\/100/)).toBeInTheDocument()
+  })
+})
+
+describe('RecipeDetail retroactive meal log', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    setUser('michael')
+    api.getRecipe.mockResolvedValue(RECIPE)
+    api.getSessions.mockResolvedValue([])
+  })
+
+  it('logs a past meal with the chosen date', async () => {
+    const user = userEvent.setup()
+    api.logMeal.mockResolvedValue({ plan_conflict: null })
+    renderDetail()
+    await screen.findByText('Pasta')
+
+    await user.click(screen.getByText(/Al gekookt/))
+    const modal = (await screen.findByText(/Al gekookt — Pasta/)).closest('div.fixed')
+    const dateInput = modal.querySelector('input[type="date"]')
+    await user.clear(dateInput)
+    await user.type(dateInput, '2026-08-20')
+    await user.click(within(modal).getByText('Toevoegen'))
+
+    expect(api.logMeal).toHaveBeenCalledWith(
+      expect.objectContaining({ recipe_id: 1, cooked_at: '2026-08-20', cooked_by: 'michael' })
+    )
+  })
+
+  it('shows the plan-conflict dialog when the day is taken', async () => {
+    const user = userEvent.setup()
+    api.logMeal.mockResolvedValue({
+      plan_conflict: {
+        week_start: '2026-08-17', day: 'thu',
+        existing_recipe_id: 9, existing_recipe_name: 'Soep',
+        cooked_recipe_id: 1, cooked_recipe_name: 'Pasta',
+      },
+    })
+    renderDetail()
+    await screen.findByText('Pasta')
+
+    await user.click(screen.getByText(/Al gekookt/))
+    const modal = (await screen.findByText(/Al gekookt — Pasta/)).closest('div.fixed')
+    await user.click(within(modal).getByText('Toevoegen'))
+
+    expect(await screen.findByText('Dag al gepland')).toBeInTheDocument()
+    await user.click(screen.getByText('Vervangen'))
+    expect(api.setDay).toHaveBeenCalledWith('2026-08-17', 'thu',
+      expect.objectContaining({ recipe_id: 1 }))
   })
 })

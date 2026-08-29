@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../lib/api'
 import { getUser } from '../lib/user'
 import { PhotoUploader } from '../components/PhotoUploader'
+import { PlanConflictDialog } from '../components/PlanConflictDialog'
 import { ChevronLeft, ChevronRight, Timer, X, Check } from 'lucide-react'
 
 const TIMER_REGEX = /(\d+)\s*(minuten|minuut|min)\b/i
@@ -41,6 +42,7 @@ export function CookingMode() {
   const [groupSessions, setGroupSessions] = useState([])
   const [meanwhileIndex, setMeanwhileIndex] = useState(0)
   const [pendingConfirmation, setPendingConfirmation] = useState(null)
+  const [planConflict, setPlanConflict] = useState(null)
   const wakeLockRef = useRef(null)
   const audioCtxRef = useRef(null)
   const me = getUser()
@@ -248,8 +250,12 @@ export function CookingMode() {
   }
 
   async function finish() {
-    await api.finishCooking(sessionId)
+    const result = await api.finishCooking(sessionId)
     wakeLockRef.current?.release?.()
+    if (result?.plan_conflict) {
+      setPlanConflict(result.plan_conflict)
+      return  // resolve the conflict before leaving
+    }
     navigate(`/recipes/${id}`)
   }
 
@@ -330,6 +336,7 @@ export function CookingMode() {
     return (
       <div className="w-full p-4 max-w-lg mx-auto pb-24">
         {confirmationDialog}
+        <PlanConflictDialog conflict={planConflict} onClose={() => navigate(`/recipes/${id}`)} />
         <h1 className="text-xl font-bold text-gray-900 mt-4 mb-2">Klaar met koken!</h1>
         <p className="text-sm text-gray-500 mb-6">Voeg eventueel een foto toe.</p>
         <PhotoUploader sessionId={sessionId} uploadedBy={me} />

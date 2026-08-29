@@ -11,8 +11,9 @@ from app.database import get_db
 from app.models import (
     CookSessionIn, CookSessionOut, RatingIn, PendingReviewOut, User,
     StepAdvanceIn, TimerStartIn, ActiveSessionOut, SessionGroupCreateIn,
-    SessionGroupOut, StepTimeConfirmIn, GroupSessionOut,
+    SessionGroupOut, StepTimeConfirmIn, GroupSessionOut, LogMealIn,
 )
+from app.routers.planner import sync_cooked_meal
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -298,6 +299,33 @@ def create_session(body: CookSessionIn, conn: Connection = Depends(get_db)):
     return _fetch_session(conn, cur.lastrowid)
 
 
+@router.post("/log", response_model=CookSessionOut, status_code=201)
+def log_meal(body: LogMealIn, conn: Connection = Depends(get_db)):
+    """Retroactively record a meal that was eaten (e.g. yesterday).
+
+    Like a finished cooking-mode session: it's done immediately, it lands on
+    that day's menu (asking first if the day is taken, via plan_conflict), and
+    it expects a rating from BOTH users through the review gate.
+    """
+    if not conn.execute("SELECT id FROM recipes WHERE id=?", (body.recipe_id,)).fetchone():
+        raise HTTPException(404, "Recept niet gevonden")
+    when = _parse_aware(body.cooked_at)
+    cur = conn.execute(
+        """INSERT INTO cook_sessions
+           (recipe_id, cooked_at, cooked_by, cooking_mode, current_step, finished_at, last_activity_at)
+           VALUES (?,?,?,1,0,?,?)""",
+        (body.recipe_id, when.isoformat(),
+         body.cooked_by.value if body.cooked_by else None,
+         when.isoformat(), when.isoformat()),
+    )
+    session_id = cur.lastrowid
+    conflict = sync_cooked_meal(conn, body.recipe_id, when.date())
+    conn.commit()
+    result = _fetch_session(conn, session_id)
+    result["plan_conflict"] = conflict
+    return result
+
+
 @router.post("/group", response_model=SessionGroupOut, status_code=201)
 def create_session_group(body: SessionGroupCreateIn, conn: Connection = Depends(get_db)):
     # "Kook samen met..." — starts exactly two linked cooking-mode sessions at
@@ -485,8 +513,13 @@ def finish_cooking(session_id: int, conn: Connection = Depends(get_db)):
         "UPDATE cook_sessions SET finished_at=? WHERE id=?",
         (_now(), session_id)
     )
+    # A finished cook lands on its day's menu (the day it was started), asking
+    # first via plan_conflict if that day already holds a different meal.
+    conflict = sync_cooked_meal(conn, session["recipe_id"], _parse_aware(session["cooked_at"]).date())
     conn.commit()
-    return _fetch_session(conn, session_id)
+    result = _fetch_session(conn, session_id)
+    result["plan_conflict"] = conflict
+    return result
 
 
 @router.get("/pending/{user}", response_model=list[PendingReviewOut])
