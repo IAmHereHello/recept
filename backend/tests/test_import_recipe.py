@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import app.ai as ai_module
 import app.routers.import_recipe as import_recipe_module
 
 
@@ -60,7 +61,7 @@ def _patch(monkeypatch, *, reply_text=None, stop_reason="end_turn", fetch_text=N
     if fetch_text is not None:
         FakeAsyncClient.fetch_text = fetch_text
     FakeAnthropicClient.stop_reason = stop_reason
-    monkeypatch.setattr(import_recipe_module, "anthropic", SimpleNamespace(AsyncAnthropic=FakeAnthropicClient))
+    monkeypatch.setattr(ai_module.anthropic, "AsyncAnthropic", FakeAnthropicClient)
 
 
 RECIPE_LD = """{

@@ -1,10 +1,20 @@
+import sqlite3
 from datetime import date
+
+import app.database as database_module
 from tests.conftest import make_recipe
 
 
 def _freeze_today(monkeypatch, iso_date):
     import app.routers.planner as planner_module
     monkeypatch.setattr(planner_module, "_today", lambda: date.fromisoformat(iso_date))
+
+
+def _set_health_score(recipe_id, score):
+    conn = sqlite3.connect(database_module.DB_PATH)
+    conn.execute("UPDATE recipes SET health_score = ? WHERE id = ?", (score, recipe_id))
+    conn.commit()
+    conn.close()
 
 
 def test_week_start_normalizes_any_weekday_to_monday(client):
@@ -53,6 +63,35 @@ def test_suggest_boosts_unrated_and_penalizes_recently_cooked(client):
     # fresh should clearly rank ahead of stale.
     assert fresh["id"] in suggested_ids
     assert suggested_ids.index(fresh["id"]) < suggested_ids.index(stale["id"])
+
+
+def test_suggest_nudges_toward_healthier_recipe(client):
+    healthy = make_recipe(client, name="Salade")
+    junk = make_recipe(client, name="Frituur")
+    _set_health_score(healthy["id"], 92)
+    _set_health_score(junk["id"], 12)
+
+    suggestions = client.post("/plan/suggest/2026-01-05").json()
+    order = [s["id"] for s in suggestions.values() if s]
+
+    # both unrated (3.0 + 0.5), so only the health nudge separates them:
+    # healthy 3.5 + 0.63, junk 3.5 - 0.57  ->  healthy clearly ahead
+    assert order.index(healthy["id"]) < order.index(junk["id"])
+    healthy_suggestion = next(s for s in suggestions.values() if s and s["id"] == healthy["id"])
+    assert healthy_suggestion["health_grade"] == "A"
+
+
+def test_suggest_unscored_recipe_is_not_penalised(client):
+    scored_low = make_recipe(client, name="Matig")
+    unscored = make_recipe(client, name="Onbekend")
+    _set_health_score(scored_low["id"], 20)
+
+    suggestions = client.post("/plan/suggest/2026-01-05").json()
+    order = [s["id"] for s in suggestions.values() if s]
+    # unscored stays at the neutral 3.5; scored_low drops to ~2.98
+    assert order.index(unscored["id"]) < order.index(scored_low["id"])
+    unscored_suggestion = next(s for s in suggestions.values() if s and s["id"] == unscored["id"])
+    assert unscored_suggestion["health_grade"] is None
 
 
 def test_suggest_respects_locked_days(client):

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { getUser, setUser } from '../lib/user'
 import { checkForUpdate } from '../lib/serviceWorker'
 import { api } from '../lib/api'
-import { RefreshCw, Loader2 } from 'lucide-react'
+import { RefreshCw, Loader2, Leaf } from 'lucide-react'
 
 const users = [
   { id: 'michael', label: 'Michael', emoji: '👨‍🍳' },
@@ -13,10 +13,31 @@ export function Settings() {
   const [current, setCurrent] = useState(getUser())
   const [updateStatus, setUpdateStatus] = useState(null)
   const [backendVersion, setBackendVersion] = useState(null)
+  const [unscored, setUnscored] = useState(null)
+  const [bulkRunning, setBulkRunning] = useState(false)
+  const [bulkResult, setBulkResult] = useState(null)
 
   useEffect(() => {
     api.getHealth().then(h => setBackendVersion(h.version)).catch(() => {})
+    refreshUnscored()
   }, [])
+
+  function refreshUnscored() {
+    api.getRecipes().then(rs => setUnscored(rs.filter(r => r.health_score == null).length)).catch(() => {})
+  }
+
+  async function runBulkHealthReview() {
+    setBulkRunning(true)
+    setBulkResult(null)
+    try {
+      setBulkResult(await api.healthReviewBulk())
+    } catch (e) {
+      setBulkResult({ error: e.message })
+    } finally {
+      setBulkRunning(false)
+      refreshUnscored()
+    }
+  }
 
   function pick(id) {
     setUser(id)
@@ -89,6 +110,36 @@ export function Settings() {
         )}
         {updateStatus === 'unavailable' && (
           <p className="text-xs text-gray-400 mt-2">Kon niet controleren (geen service worker actief).</p>
+        )}
+      </div>
+
+      <div className="mt-8 pt-6 border-t border-gray-100">
+        <h2 className="text-sm font-semibold text-gray-900 mb-2">Gezondheidsscores</h2>
+        <p className="text-sm text-gray-500 mb-3">
+          {unscored == null
+            ? 'Laden…'
+            : unscored === 0
+              ? 'Alle recepten hebben een gezondheidsscore.'
+              : `${unscored} recept${unscored === 1 ? '' : 'en'} zonder gezondheidsscore.`}
+        </p>
+        <button
+          onClick={runBulkHealthReview}
+          disabled={bulkRunning || unscored === 0}
+          className="flex items-center gap-1.5 border border-green-600 text-green-700 px-3 py-2 rounded-lg text-sm font-medium hover:bg-green-50 transition disabled:opacity-50"
+        >
+          {bulkRunning ? <Loader2 size={14} className="animate-spin" /> : <Leaf size={14} />}
+          Beoordeel ontbrekende scores
+        </button>
+        {bulkRunning && (
+          <p className="text-xs text-gray-400 mt-2">Dit kan even duren voor een grote receptenlijst…</p>
+        )}
+        {bulkResult?.error && (
+          <p className="text-xs text-red-600 mt-2">{bulkResult.error}</p>
+        )}
+        {bulkResult && !bulkResult.error && (
+          <p className="text-xs text-gray-500 mt-2">
+            {bulkResult.scored} beoordeeld{bulkResult.failed ? `, ${bulkResult.failed} mislukt` : ''}.
+          </p>
         )}
       </div>
     </div>

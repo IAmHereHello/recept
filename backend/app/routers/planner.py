@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlite3 import Connection
 from datetime import date, timedelta
 from app.database import get_db
+from app.health import grade as health_grade
 from app.models import MealPlanEntry, GroceryRequest, SideDishIn
 
 router = APIRouter(prefix="/plan", tags=["planner"])
@@ -9,6 +10,11 @@ router = APIRouter(prefix="/plan", tags=["planner"])
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 COOLDOWN_DAYS = 14
 FREEZER_BOOST_WINDOW_DAYS = 14
+
+# Healthiness is a gentle nudge, not a gate: a 100/100 recipe gains +0.75 and a
+# 0/100 loses 0.75, versus the 1.5 cooldown penalty and the 1-5 rating base.
+# Unscored recipes (health_score IS NULL) are unaffected.
+HEALTH_WEIGHT = 0.75
 
 
 def _week_start(week_start: str) -> str:
@@ -34,6 +40,7 @@ def _score_recipes(conn: Connection, week_start: str) -> list[dict]:
             r.name,
             r.is_vegetarian,
             r.is_vegan,
+            r.health_score,
             AVG(rt.stars) as avg_stars,
             COUNT(DISTINCT rt.id) as rating_count,
             MAX(cs.cooked_at) as last_cooked
@@ -52,6 +59,9 @@ def _score_recipes(conn: Connection, week_start: str) -> list[dict]:
             score += 0.5  # boost unrated (try new dishes)
         if r["last_cooked"] and r["last_cooked"] >= cutoff:
             score -= 1.5  # soft cooldown penalty
+        if r["health_score"] is not None:
+            score += ((r["health_score"] - 50) / 50) * HEALTH_WEIGHT  # gentle health nudge
+        r["health_grade"] = health_grade(r["health_score"])
         r["score"] = score
         scored.append(r)
 

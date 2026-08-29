@@ -6,7 +6,7 @@ import { RecipeForm } from './RecipeForm'
 import { api } from '../lib/api'
 
 vi.mock('../lib/api', () => ({
-  api: { createRecipe: vi.fn(), getRecipe: vi.fn(), updateRecipe: vi.fn() },
+  api: { createRecipe: vi.fn(), getRecipe: vi.fn(), updateRecipe: vi.fn(), healthReview: vi.fn() },
 }))
 
 function renderForm() {
@@ -33,6 +33,7 @@ describe('RecipeForm freezer fields', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     api.createRecipe.mockResolvedValue({ id: 1 })
+    api.healthReview.mockResolvedValue({ id: 1 })
   })
 
   it('defaults is_freezable to true and omits portions/freezer_months when left blank', async () => {
@@ -45,6 +46,28 @@ describe('RecipeForm freezer fields', () => {
     expect(api.createRecipe).toHaveBeenCalledWith(
       expect.objectContaining({ portions: null, is_freezable: true, freezer_months: null })
     )
+  })
+
+  it('auto-runs a health review after creating a recipe', async () => {
+    const user = userEvent.setup()
+    renderForm()
+
+    await user.type(inputNear('Naam *'), 'Soep')
+    await user.click(screen.getByRole('button', { name: /Recept aanmaken/ }))
+
+    expect(api.healthReview).toHaveBeenCalledWith(1)
+  })
+
+  it('does not block recipe creation when the health review fails', async () => {
+    api.healthReview.mockRejectedValue(new Error('AI down'))
+    const user = userEvent.setup()
+    renderForm()
+
+    await user.type(inputNear('Naam *'), 'Soep')
+    await user.click(screen.getByRole('button', { name: /Recept aanmaken/ }))
+
+    expect(api.createRecipe).toHaveBeenCalled()
+    expect(screen.queryByText('AI down')).not.toBeInTheDocument()
   })
 
   it('coerces portions and freezer_months to numbers when filled in', async () => {
@@ -93,6 +116,7 @@ describe('RecipeForm step editor integration', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     api.createRecipe.mockResolvedValue({ id: 1 })
+    api.healthReview.mockResolvedValue({ id: 1 })
   })
 
   it('submits main and meanwhile steps with wait times and fresh per-track sort_order', async () => {

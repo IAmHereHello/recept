@@ -18,6 +18,7 @@ vi.mock('../lib/api', () => ({
     deleteRecipe: vi.fn(),
     getRecipes: vi.fn(),
     createSessionGroup: vi.fn(),
+    healthReview: vi.fn(),
   },
 }))
 
@@ -256,5 +257,43 @@ describe('RecipeDetail "Kook samen met..." pairing', () => {
     await screen.findByText('Pasta')
 
     expect(screen.getByText('Kook samen met...').closest('button')).toBeDisabled()
+  })
+})
+
+describe('RecipeDetail healthiness', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    setUser('michael')
+    api.getSessions.mockResolvedValue([])
+  })
+
+  it('shows the grade and expands rationale + tip', async () => {
+    const user = userEvent.setup()
+    api.getRecipe.mockResolvedValue({
+      ...RECIPE, health_score: 72, health_grade: 'B',
+      health_rationale: 'Veel groente, maar witte pasta.', health_tip: 'Kies volkoren.',
+      health_scored_at: '2026-08-29T10:00:00+00:00',
+    })
+    renderDetail()
+    await screen.findByText('Pasta')
+
+    await user.click(screen.getByText(/Gezondheid/))
+    expect(screen.getByText('Veel groente, maar witte pasta.')).toBeInTheDocument()
+    expect(screen.getByText('Kies volkoren.')).toBeInTheDocument()
+  })
+
+  it('runs a review on demand and shows the new score', async () => {
+    const user = userEvent.setup()
+    api.getRecipe.mockResolvedValue({ ...RECIPE, health_score: null, health_grade: null })
+    api.healthReview.mockResolvedValue({ ...RECIPE, health_score: 88, health_grade: 'A', health_rationale: 'Top.' })
+    renderDetail()
+    await screen.findByText('Pasta')
+
+    await user.click(screen.getByText(/Gezondheid/))
+    await user.click(screen.getByText('Gezondheid beoordelen'))
+
+    expect(api.healthReview).toHaveBeenCalledWith('1')
+    expect(await screen.findByText(/88\/100/)).toBeInTheDocument()
   })
 })

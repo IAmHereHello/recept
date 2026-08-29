@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
+import { HealthBadge } from '../components/HealthBadge'
 import {
   ChevronLeft, ChevronRight, Sparkles, Lock, Unlock, ShoppingCart, X, ChefHat, Snowflake
 } from 'lucide-react'
@@ -288,11 +289,12 @@ export function Planner() {
                         onClick={() => applySuggestion(day)}
                         className={
                           suggestion.from_freezer
-                            ? 'text-xs text-sky-600 bg-sky-50 px-2 py-0.5 rounded-full hover:bg-sky-100 transition'
-                            : 'text-xs text-green-600 bg-green-50 px-2 py-0.5 rounded-full hover:bg-green-100 transition'
+                            ? 'flex items-center gap-1 text-xs text-sky-600 bg-sky-50 px-2 py-0.5 rounded-full hover:bg-sky-100 transition'
+                            : 'flex items-center gap-1 text-xs text-green-600 bg-green-50 px-2 py-0.5 rounded-full hover:bg-green-100 transition'
                         }
                       >
                         {suggestion.from_freezer ? '❄️' : '✨'} {suggestion.name}
+                        {suggestion.health_grade && <HealthBadge grade={suggestion.health_grade} />}
                       </button>
                     )}
                   </div>

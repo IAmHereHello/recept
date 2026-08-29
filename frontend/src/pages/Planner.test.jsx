@@ -363,3 +363,32 @@ describe('Planner freezer integration', () => {
       expect.objectContaining({ recipe_id: 1, locked: true, freezer_item_id: 99 }))
   })
 })
+
+describe('Planner suggestion health grade', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-01-05T12:00:00'))
+    api.getRecipes.mockResolvedValue([{ id: 7, name: 'Bowl' }])
+    api.getWeek.mockResolvedValue(EMPTY_WEEK)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('shows the grade letter on the suggestion chip when the recipe is scored', async () => {
+    const user = userEvent.setup()
+    api.suggestWeek.mockResolvedValue({
+      mon: { id: 7, name: 'Bowl', from_freezer: false, health_grade: 'A' },
+      tue: null, wed: null, thu: null, fri: null, sat: null, sun: null,
+    })
+    renderPlanner()
+    await screen.findByText('Maandag')
+
+    await user.click(screen.getByRole('button', { name: /Suggesties/ }))
+
+    const chip = (await screen.findByText(/Bowl/)).closest('button')
+    expect(within(chip).getByText('A')).toBeInTheDocument()
+  })
+})

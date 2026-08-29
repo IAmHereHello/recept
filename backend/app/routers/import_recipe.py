@@ -1,17 +1,14 @@
-import os
 import re
 import json
 import logging
 
 import httpx
-import anthropic
 from fastapi import APIRouter, HTTPException
+from app.ai import complete_json, get_api_key
 from app.models import ImportUrlRequest
 
 router = APIRouter(prefix="/import", tags=["import"])
 logger = logging.getLogger("app.import")
-
-MODEL = "claude-haiku-4-5-20251001"
 
 # Fallback only — used when the page has no schema.org Recipe JSON-LD. Big
 # recipe sites (AH, NYT, most WordPress food blogs) render the recipe body
@@ -42,23 +39,6 @@ Split each ingredient string into amount (number/fraction as text), unit (g, ml,
 difficulty is your judgement from the steps if the source doesn't state it.
 Keep step text in the source language. If you cannot determine a field, use null.
 Return only the JSON object, no markdown fences, no explanation."""
-
-
-def _extract_json(raw: str) -> str:
-    """Best-effort pull the JSON object out of the model's reply.
-
-    Tolerates a ```json ... ``` fence or stray prose around the object even
-    though the system prompt asks for neither.
-    """
-    text = raw.strip()
-    fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, re.DOTALL)
-    if fence:
-        text = fence.group(1).strip()
-    if not text.startswith("{"):
-        start, end = text.find("{"), text.rfind("}")
-        if 0 <= start < end:
-            text = text[start:end + 1]
-    return text
 
 
 def _is_recipe(node: dict) -> bool:
@@ -97,9 +77,7 @@ def _find_recipe_jsonld(html: str) -> dict | None:
 
 @router.post("/")
 async def import_from_url(body: ImportUrlRequest):
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise HTTPException(500, "ANTHROPIC_API_KEY not set")
+    get_api_key()  # fail fast with 500 before spending a network fetch
 
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as http_client:
@@ -120,33 +98,8 @@ async def import_from_url(body: ImportUrlRequest):
         logger.info("No Recipe JSON-LD for %s — falling back to raw HTML", body.url)
         user_content = f"Extract the recipe from this page HTML:\n\n{full_html[:HTML_CAP]}"
 
-    client = anthropic.AsyncAnthropic(api_key=api_key)
-    try:
-        message = await client.messages.create(
-            model=MODEL,
-            max_tokens=8192,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_content}],
-        )
-    except anthropic.APIError as e:
-        logger.exception("Anthropic API call failed for %s", body.url)
-        raise HTTPException(502, f"AI-aanvraag mislukt: {e}")
-
-    stop_reason = getattr(message, "stop_reason", None)
-    raw = "".join(b.text for b in message.content if hasattr(b, "text")).strip()
-
-    if stop_reason == "max_tokens":
-        logger.warning("Import hit max_tokens (recipe too long) for %s", body.url)
-        raise HTTPException(502, "Recept te lang om automatisch te importeren — vul handmatig in.")
-
-    if not raw:
-        logger.warning("Empty AI response (stop_reason=%s) for %s", stop_reason, body.url)
-        raise HTTPException(502, "AI gaf een leeg antwoord — probeer een andere URL.")
-
-    try:
-        data = json.loads(_extract_json(raw))
-    except json.JSONDecodeError:
-        logger.warning("AI returned non-JSON for %s:\n%s", body.url, raw[:2000])
-        raise HTTPException(502, "AI kon geen recept uit deze pagina halen — probeer een andere URL.")
-
-    return data
+    return await complete_json(
+        SYSTEM_PROMPT, user_content,
+        context=f"import {body.url}", max_tokens=8192,
+        bad_json_message="AI kon geen recept uit deze pagina halen — probeer een andere URL.",
+    )

@@ -19,6 +19,8 @@ export function RecipeForm() {
   const [form, setForm] = useState(EMPTY)
   const [loading, setLoading] = useState(isEdit)
   const [saving, setSaving] = useState(false)
+  const [scoringHealth, setScoringHealth] = useState(false)
+  const [rescoreHealth, setRescoreHealth] = useState(false)
   const [importUrl, setImportUrl] = useState('')
   const [importing, setImporting] = useState(false)
   const [error, setError] = useState('')
@@ -117,14 +119,23 @@ export function RecipeForm() {
       }
       if (isEdit) {
         await api.updateRecipe(id, payload)
+        if (rescoreHealth) {
+          setScoringHealth(true)
+          await api.healthReview(id).catch(() => {})
+        }
         navigate(`/recipes/${id}`)
       } else {
         const created = await api.createRecipe(payload)
+        // New recipes get a healthiness score automatically; a failure here
+        // just means the detail page shows "nog niet beoordeeld" + a button.
+        setScoringHealth(true)
+        await api.healthReview(created.id).catch(() => {})
         navigate(`/recipes/${created.id}`)
       }
     } catch (e) {
       setError(e.message)
       setSaving(false)
+      setScoringHealth(false)
     }
   }
 
@@ -322,6 +333,14 @@ export function RecipeForm() {
         <StepEditor steps={editorSteps} onChange={setEditorSteps} />
       </section>
 
+      {isEdit && (
+        <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer mb-8">
+          <input type="checkbox" checked={rescoreHealth} onChange={e => setRescoreHealth(e.target.checked)}
+            className="w-4 h-4 rounded accent-green-600" />
+          <span>Gezondheidsscore opnieuw bepalen na opslaan</span>
+        </label>
+      )}
+
       <div className="w-full fixed bottom-16 left-0 right-0 bg-white border-t border-gray-100 px-4 py-3 max-w-lg mx-auto">
         <div className="flex gap-3">
           <button type="button" onClick={() => navigate(-1)}
@@ -331,7 +350,7 @@ export function RecipeForm() {
           <button type="submit" disabled={saving}
             className="flex-1 py-2.5 bg-green-600 text-white rounded-xl text-sm font-medium hover:bg-green-700 disabled:opacity-60 transition flex items-center justify-center gap-2">
             {saving && <Loader2 size={14} className="animate-spin" />}
-            {isEdit ? 'Opslaan' : 'Recept aanmaken'}
+            {scoringHealth ? 'Gezondheid beoordelen…' : isEdit ? 'Opslaan' : 'Recept aanmaken'}
           </button>
         </div>
       </div>

@@ -66,6 +66,11 @@ class RecipeOut(RecipeIn):
     avg_rating: Optional[float] = None
     last_cooked: Optional[str] = None
     cover_photo: Optional[str] = None
+    health_score: Optional[int] = None
+    health_grade: Optional[str] = None
+    health_rationale: Optional[str] = None
+    health_tip: Optional[str] = None
+    health_scored_at: Optional[str] = None
 
 
 class CookSessionIn(BaseModel):

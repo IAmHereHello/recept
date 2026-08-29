@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
 import { StarRating } from '../components/StarRating'
 import { Badge } from '../components/Badge'
+import { HealthBadge } from '../components/HealthBadge'
 import { Plus, Search, ChefHat, Filter } from 'lucide-react'
 
 const DIFFICULTIES = ['', 'easy', 'medium', 'hard']
@@ -105,6 +106,7 @@ export function RecipeList() {
                 )}
                 <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                   {r.avg_rating && <StarRating value={r.avg_rating} readonly size={4} />}
+                  <HealthBadge grade={r.health_grade} title={r.health_score != null ? `Gezondheid ${r.health_score}/100` : undefined} />
                   {r.is_vegan && <Badge color="emerald">Vegan</Badge>}
                   {!r.is_vegan && r.is_vegetarian && <Badge color="green">Veggie</Badge>}
                   {r.cuisine_type && <Badge>{r.cuisine_type}</Badge>}

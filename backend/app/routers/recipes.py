@@ -1,11 +1,66 @@
+import asyncio
+import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from sqlite3 import Connection
+from app.ai import complete_json
 from app.config import UPLOAD_DIR
 from app.database import get_db
+from app.health import grade as health_grade
 from app.models import RecipeIn, RecipeOut
 
 router = APIRouter(prefix="/recipes", tags=["recipes"])
+logger = logging.getLogger("app.recipes")
+
+HEALTH_SYSTEM = """Je bent een voedingsdeskundige. Beoordeel hoe gezond een recept is als doordeweekse avondmaaltijd.
+Weeg mee: aandeel groente/fruit/peulvruchten, volkoren vs. wit meel, mager vs. vet/bewerkt vlees,
+bereidingswijze (bakken/stomen vs. frituren), toegevoegde suiker, zout, verzadigd vet (room, boter, kaas),
+en de balans van het bord.
+Antwoord ALLEEN met JSON in exact deze vorm:
+{"score": <geheel getal 0-100, 100 = zeer gezond>, "rationale": "<2-3 zinnen NL: de belangrijkste plus- en minpunten>", "tip": "<1 concrete tip om dit gerecht gezonder te maken>"}
+Geen markdown, geen tekst buiten de JSON."""
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def _score_health(recipe: dict) -> dict:
+    """Ask Haiku for a 0-100 healthiness score + rationale + tip for one recipe."""
+    ingredients = "\n".join(
+        f"- {(i['amount'] or '')} {(i['unit'] or '')} {i['name']}".strip()
+        for i in recipe["ingredients"]
+    ) or "(geen ingrediënten opgegeven)"
+    steps = "\n".join(
+        f"{n}. {s['description']}" for n, s in enumerate(recipe["steps"], 1)
+    ) or "(geen stappen opgegeven)"
+    user = (
+        f"Recept: {recipe['name']}\n"
+        f"Porties: {recipe.get('portions') or 'onbekend'}\n\n"
+        f"Ingrediënten:\n{ingredients}\n\n"
+        f"Bereiding:\n{steps}"
+    )
+    data = await complete_json(
+        HEALTH_SYSTEM, user,
+        context="health-score", max_tokens=1024,
+        bad_json_message="AI kon de gezondheid van dit recept niet bepalen — probeer het opnieuw.",
+    )
+    score = data.get("score")
+    if not isinstance(score, (int, float)) or isinstance(score, bool) or not 0 <= score <= 100:
+        raise HTTPException(502, "AI gaf een ongeldige gezondheidsscore terug.")
+    return {
+        "score": int(round(score)),
+        "rationale": (data.get("rationale") or "").strip() or None,
+        "tip": (data.get("tip") or "").strip() or None,
+    }
+
+
+def _save_health(conn: Connection, recipe_id: int, result: dict) -> None:
+    conn.execute(
+        "UPDATE recipes SET health_score=?, health_rationale=?, health_tip=?, health_scored_at=? WHERE id=?",
+        (result["score"], result["rationale"], result["tip"], _now(), recipe_id),
+    )
 
 
 def _fetch_recipe(conn: Connection, recipe_id: int) -> dict:
@@ -36,6 +91,7 @@ def _fetch_recipe(conn: Connection, recipe_id: int) -> dict:
         (recipe_id,)
     ).fetchone()
     r["cover_photo"] = photo["file_path"] if photo else None
+    r["health_grade"] = health_grade(r.get("health_score"))
     return r
 
 
@@ -142,3 +198,36 @@ def delete_recipe(recipe_id: int, conn: Connection = Depends(get_db)):
     # get removed automatically — clean those up now that the rows are gone.
     for row in photo_rows:
         (UPLOAD_DIR / Path(row["file_path"]).name).unlink(missing_ok=True)
+
+
+@router.post("/health-review/bulk")
+async def health_review_bulk(conn: Connection = Depends(get_db)):
+    """Score every recipe that has no healthiness score yet, 5 at a time."""
+    ids = [row["id"] for row in conn.execute(
+        "SELECT id FROM recipes WHERE health_score IS NULL ORDER BY id"
+    ).fetchall()]
+    scored = failed = 0
+    for start in range(0, len(ids), 5):
+        chunk = ids[start:start + 5]
+        recipes = [_fetch_recipe(conn, rid) for rid in chunk]
+        results = await asyncio.gather(
+            *(_score_health(r) for r in recipes), return_exceptions=True
+        )
+        for rid, result in zip(chunk, results):
+            if isinstance(result, Exception):
+                failed += 1
+                logger.warning("bulk health-review failed for recipe %s: %s", rid, result)
+                continue
+            _save_health(conn, rid, result)
+            scored += 1
+        conn.commit()
+    return {"scored": scored, "failed": failed, "total": len(ids)}
+
+
+@router.post("/{recipe_id}/health-review", response_model=RecipeOut)
+async def health_review(recipe_id: int, conn: Connection = Depends(get_db)):
+    """(Re)score one recipe's healthiness via Haiku."""
+    recipe = _fetch_recipe(conn, recipe_id)
+    _save_health(conn, recipe_id, await _score_health(recipe))
+    conn.commit()
+    return _fetch_recipe(conn, recipe_id)

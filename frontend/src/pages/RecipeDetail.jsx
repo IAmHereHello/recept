@@ -4,8 +4,9 @@ import { api } from '../lib/api'
 import { getUser } from '../lib/user'
 import { StarRating } from '../components/StarRating'
 import { Badge } from '../components/Badge'
+import { HealthBadge } from '../components/HealthBadge'
 import {
-  Clock, ChefHat, Pencil, Trash2, Play, X, Users, Search
+  Clock, ChefHat, Pencil, Trash2, Play, X, Users, Search, ChevronDown, Leaf, Loader2
 } from 'lucide-react'
 
 const DIFF_LABELS = { easy: 'Makkelijk', medium: 'Gemiddeld', hard: 'Moeilijk' }
@@ -22,6 +23,9 @@ export function RecipeDetail() {
   const [pairSearch, setPairSearch] = useState('')
   const [pairCandidates, setPairCandidates] = useState([])
   const [pairError, setPairError] = useState('')
+  const [showHealth, setShowHealth] = useState(false)
+  const [healthReviewing, setHealthReviewing] = useState(false)
+  const [healthError, setHealthError] = useState('')
   const me = getUser()
 
   const load = useCallback(() => Promise.all([
@@ -92,6 +96,18 @@ export function RecipeDetail() {
     navigate('/recipes')
   }
 
+  async function runHealthReview() {
+    setHealthReviewing(true)
+    setHealthError('')
+    try {
+      setRecipe(await api.healthReview(id))
+    } catch (e) {
+      setHealthError(e.message)
+    } finally {
+      setHealthReviewing(false)
+    }
+  }
+
   if (loading) return <div className="p-6 text-center text-gray-400">Laden...</div>
   if (!recipe) return <div className="p-6 text-center text-gray-400">Niet gevonden.</div>
 
@@ -146,6 +162,48 @@ export function RecipeDetail() {
             <span className="text-sm text-gray-500">{recipe.avg_rating.toFixed(1)}</span>
           </div>
         )}
+
+        <div className="mb-4">
+          <button
+            onClick={() => setShowHealth(v => !v)}
+            className="flex items-center gap-2 text-sm text-gray-700"
+          >
+            {recipe.health_grade
+              ? <HealthBadge grade={recipe.health_grade} size="md" />
+              : <Leaf size={18} className="text-gray-300" />}
+            <span className="font-medium">
+              Gezondheid{recipe.health_score != null ? ` · ${recipe.health_score}/100` : ' · nog niet beoordeeld'}
+            </span>
+            <ChevronDown size={14} className={`text-gray-400 transition ${showHealth ? 'rotate-180' : ''}`} />
+          </button>
+
+          {showHealth && (
+            <div className="mt-2 bg-gray-50 rounded-xl p-3 text-sm">
+              {recipe.health_rationale
+                ? <p className="text-gray-600">{recipe.health_rationale}</p>
+                : <p className="text-gray-400 italic">Nog geen beoordeling. Laat de AI dit recept beoordelen.</p>}
+              {recipe.health_tip && (
+                <p className="mt-2 text-green-700"><span className="font-semibold">Tip:</span> {recipe.health_tip}</p>
+              )}
+              {healthError && <p className="mt-2 text-red-600">{healthError}</p>}
+              <div className="mt-3 flex items-center gap-3">
+                <button
+                  onClick={runHealthReview}
+                  disabled={healthReviewing}
+                  className="flex items-center gap-1.5 border border-green-600 text-green-700 px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-green-50 disabled:opacity-50 transition"
+                >
+                  {healthReviewing ? <Loader2 size={14} className="animate-spin" /> : <Leaf size={14} />}
+                  {recipe.health_score != null ? 'Opnieuw beoordelen' : 'Gezondheid beoordelen'}
+                </button>
+                {recipe.health_scored_at && (
+                  <span className="text-xs text-gray-400">
+                    {new Date(recipe.health_scored_at).toLocaleDateString('nl-NL', { day: 'numeric', month: 'short', year: 'numeric' })}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
 
         {recipe.description && (
           <p className="text-gray-600 text-sm mb-6">{recipe.description}</p>

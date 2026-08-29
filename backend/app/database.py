@@ -222,5 +222,20 @@ def init_db():
     if "group_id" not in cols:
         conn.execute("ALTER TABLE cook_sessions ADD COLUMN group_id INTEGER REFERENCES session_groups(id) ON DELETE SET NULL")
 
+    # Migration: AI healthiness score (0-100) plus its rationale and a
+    # "gezonder maken" tip for the recipe detail "lees meer" panel. All
+    # nullable — a recipe is simply "not yet scored" until health-review runs,
+    # and the planner treats NULL as neutral. The A-E grade is derived from
+    # health_score at read time (app/health.py), not stored.
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(recipes)").fetchall()]
+    if "health_score" not in cols:
+        conn.execute("ALTER TABLE recipes ADD COLUMN health_score INTEGER")
+    if "health_rationale" not in cols:
+        conn.execute("ALTER TABLE recipes ADD COLUMN health_rationale TEXT")
+    if "health_tip" not in cols:
+        conn.execute("ALTER TABLE recipes ADD COLUMN health_tip TEXT")
+    if "health_scored_at" not in cols:
+        conn.execute("ALTER TABLE recipes ADD COLUMN health_scored_at TEXT")
+
     conn.commit()
     conn.close()

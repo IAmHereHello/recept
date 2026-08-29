@@ -27,6 +27,8 @@ export const api = {
   createRecipe: (data) => req('POST', '/recipes/', data),
   updateRecipe: (id, data) => req('PUT', `/recipes/${id}`, data),
   deleteRecipe: (id) => req('DELETE', `/recipes/${id}`),
+  healthReview: (id) => req('POST', `/recipes/${id}/health-review`),
+  healthReviewBulk: () => req('POST', '/recipes/health-review/bulk'),
 
   // Cook sessions
   getSessions: (recipeId) => req('GET', `/sessions/recipe/${recipeId}`),
