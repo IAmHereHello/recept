@@ -14,6 +14,9 @@ from app.models import (
     SessionGroupOut, StepTimeConfirmIn, GroupSessionOut, LogMealIn,
 )
 from app.routers.planner import sync_cooked_meal
+from app.timing import (
+    estimate_remaining, is_outlier, recipe_typical_seconds, recompute_step_duration,
+)
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -25,12 +28,9 @@ ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.heic'}
 # (see _is_stale).
 INACTIVITY_TIMEOUT_SECONDS = 60 * 60
 
-# Step-time learning: a fresh observation within this fraction of the running
-# average is auto-accepted; anything further off is held as a pending
-# confirmation (see _log_step_time) rather than silently skewing the average.
-OUTLIER_TOLERANCE = 0.10
 # Guards against accidental double-taps (e.g. tapping "volgende" twice)
 # logging a near-zero-second "step" that would drag the average down.
+# (Outlier tolerance + the EWMA learning itself live in app/timing.py.)
 MIN_LOGGABLE_SECONDS = 3
 
 _ACTIVE_SESSION_SELECT = """
@@ -72,68 +72,35 @@ def _main_step_rows(conn: Connection, recipe_id: int) -> list[dict]:
     ).fetchall()]
 
 
-def _estimate_remaining_seconds(
-    conn: Connection, recipe_id: int, cook_time: Optional[int], main_steps: list[dict],
-    current_step: int, active_timer_remaining: Optional[int], step_started_at: Optional[str], now: datetime,
-) -> Optional[int]:
-    total_steps = len(main_steps)
-    if total_steps == 0:
+def _timer_remaining(row: dict) -> Optional[int]:
+    if row["timer_seconds"] is None or row["timer_started_at"] is None:
         return None
+    elapsed = (datetime.now(timezone.utc) - _parse_aware(row["timer_started_at"])).total_seconds()
+    return max(0, round(row["timer_seconds"] - elapsed))
 
-    learned = {
-        row["sort_order"]: row["avg_seconds"]
-        for row in conn.execute(
-            "SELECT sort_order, avg_seconds FROM step_durations WHERE recipe_id=? AND track='main' AND sample_count > 0",
-            (recipe_id,)
-        ).fetchall()
-    }
-    known_total = sum(learned.values())
-    unknown_count = total_steps - len(learned)
 
-    if cook_time is not None:
-        # Budget minus whatever's already been empirically learned, spread
-        # over the steps we still have no data for — NOT a flat cook_time/N
-        # applied everywhere, which is what let a long learned/real step's
-        # overrun distort every other step's share (the original bug).
-        fallback_avg = max(0.0, cook_time * 60 - known_total) / unknown_count if unknown_count > 0 else 0.0
-    elif unknown_count == 0:
-        # No author estimate at all, but every step has real history — just
-        # add the learned averages up directly.
-        fallback_avg = 0.0
-    else:
-        return None  # nothing to derive a fallback share from
+def _session_estimate(conn: Connection, row: dict, cook_time: Optional[int], main_steps: list[dict]):
+    """(mid, low, high) seconds remaining for an in-progress cook, or None.
 
-    def share_for(index: int, is_current: bool) -> float:
-        sort_order = main_steps[index]["sort_order"]
-        if is_current and active_timer_remaining is not None:
-            return float(active_timer_remaining)
-        base = learned.get(sort_order, fallback_avg)
-        if is_current and sort_order in learned and step_started_at:
-            elapsed = (now - _parse_aware(step_started_at)).total_seconds()
-            return max(0.0, base - elapsed)
-        return base
-
-    current_share = share_for(current_step, True)
-    remaining_share = sum(share_for(i, False) for i in range(current_step + 1, total_steps))
-    return round(current_share + remaining_share)
+    Budget is the recipe's learned typical duration when we have one, else the
+    authored cook_time; app.timing spreads it over the steps that have neither
+    a learned average nor an authored wait time.
+    """
+    if not main_steps:
+        return None
+    budget = recipe_typical_seconds(conn, row["recipe_id"])
+    if budget is None and cook_time is not None:
+        budget = cook_time * 60
+    return estimate_remaining(
+        conn, row["recipe_id"], budget, main_steps, row["current_step"],
+        _timer_remaining(row), row["step_started_at"], datetime.now(timezone.utc),
+    )
 
 
 def _active_session_out(conn: Connection, row: dict) -> dict:
     main_steps = _main_step_rows(conn, row["recipe_id"])
-    total_steps = len(main_steps)
-
-    active_timer_remaining = None
-    if row["timer_seconds"] is not None and row["timer_started_at"] is not None:
-        started = datetime.fromisoformat(row["timer_started_at"])
-        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
-        active_timer_remaining = max(0, round(row["timer_seconds"] - elapsed))
-
-    estimated_remaining = None
-    if total_steps > 0:
-        estimated_remaining = _estimate_remaining_seconds(
-            conn, row["recipe_id"], row["cook_time"], main_steps, row["current_step"],
-            active_timer_remaining, row["step_started_at"], datetime.now(timezone.utc)
-        )
+    active_timer_remaining = _timer_remaining(row)
+    est = _session_estimate(conn, row, row["cook_time"], main_steps)
 
     return {
         "session_id": row["id"],
@@ -141,9 +108,11 @@ def _active_session_out(conn: Connection, row: dict) -> dict:
         "recipe_name": row["recipe_name"],
         "cooked_by": row["cooked_by"],
         "current_step": row["current_step"],
-        "total_steps": total_steps,
+        "total_steps": len(main_steps),
         "active_timer_remaining_seconds": active_timer_remaining,
-        "estimated_remaining_seconds": estimated_remaining,
+        "estimated_remaining_seconds": est[0] if est else None,
+        "estimated_remaining_low_seconds": est[1] if est else None,
+        "estimated_remaining_high_seconds": est[2] if est else None,
         "is_stale": _is_stale(row, datetime.now(timezone.utc)),
         "group_id": row["group_id"],
     }
@@ -153,84 +122,44 @@ def _log_step_time(conn: Connection, recipe_id: int, track: str, sort_order: int
     if seconds < MIN_LOGGABLE_SECONDS:
         return
     existing = conn.execute(
-        "SELECT * FROM step_durations WHERE recipe_id=? AND track=? AND sort_order=?",
+        "SELECT avg_seconds, stddev_seconds, sample_count FROM step_durations WHERE recipe_id=? AND track=? AND sort_order=?",
         (recipe_id, track, sort_order)
     ).fetchone()
 
     if existing is None or existing["sample_count"] == 0:
-        # First-ever observation for this step — nothing to compare against,
-        # so it becomes the baseline outright (no confirmation needed).
-        conn.execute(
-            "INSERT INTO step_time_logs (recipe_id, track, sort_order, cook_session_id, seconds, counted) VALUES (?,?,?,?,?,1)",
-            (recipe_id, track, sort_order, cook_session_id, seconds)
-        )
-        conn.execute(
-            """INSERT INTO step_durations (recipe_id, track, sort_order, avg_seconds, sample_count, updated_at)
-               VALUES (?,?,?,?,1,?)
-               ON CONFLICT(recipe_id, track, sort_order)
-               DO UPDATE SET avg_seconds=excluded.avg_seconds, sample_count=1, updated_at=excluded.updated_at""",
-            (recipe_id, track, sort_order, float(seconds), _now())
-        )
-        return
-
-    avg = existing["avg_seconds"]
-    count = existing["sample_count"]
-    deviation = abs(seconds - avg) / avg if avg > 0 else 1.0
-
-    if deviation <= OUTLIER_TOLERANCE:
-        conn.execute(
-            "INSERT INTO step_time_logs (recipe_id, track, sort_order, cook_session_id, seconds, counted) VALUES (?,?,?,?,?,1)",
-            (recipe_id, track, sort_order, cook_session_id, seconds)
-        )
-        new_avg = (avg * count + seconds) / (count + 1)
-        conn.execute(
-            "UPDATE step_durations SET avg_seconds=?, sample_count=?, updated_at=? WHERE id=?",
-            (new_avg, count + 1, _now(), existing["id"])
-        )
+        # First-ever observation — nothing to compare against, becomes the baseline.
+        counted: Optional[int] = 1
+    elif is_outlier(existing["avg_seconds"], existing["stddev_seconds"], existing["sample_count"], seconds):
+        # Too far off the running average to fold in silently — held as a
+        # pending sample (counted=NULL, untouched average). _fetch_session
+        # surfaces it via pending_step_confirmation until the frontend calls
+        # /sessions/step-time/{id}/confirm.
+        counted = None
     else:
-        # Outside +-10% of the running average — hold it as a pending sample
-        # rather than let a one-off (or a mistake) skew future estimates.
-        # _fetch_session surfaces this via pending_step_confirmation until
-        # the frontend calls /sessions/step-time/{id}/confirm.
-        conn.execute(
-            "INSERT INTO step_time_logs (recipe_id, track, sort_order, cook_session_id, seconds, counted) VALUES (?,?,?,?,?,NULL)",
-            (recipe_id, track, sort_order, cook_session_id, seconds)
-        )
+        counted = 1
+
+    conn.execute(
+        "INSERT INTO step_time_logs (recipe_id, track, sort_order, cook_session_id, seconds, counted) VALUES (?,?,?,?,?,?)",
+        (recipe_id, track, sort_order, cook_session_id, seconds, counted)
+    )
+    if counted == 1:
+        recompute_step_duration(conn, recipe_id, track, sort_order)
 
 
 def _undo_counted_step_times(conn: Connection, session_id: int) -> None:
-    # Quitting mid-cook (whether via the explicit "Stop met koken" button or
-    # abandoning a stale session) must not leave this session's step times
-    # baked into the learned average — recompute each affected step's average
-    # from its remaining counted samples (raw seconds are kept per-log
-    # specifically so this recomputation is exact, not an approximation of
-    # reversing the incremental rolling average), or clear it entirely if
-    # this session was the only contributor so far. Pending/declined samples
-    # never touched step_durations in the first place, so they need no
-    # special handling here — they're simply cascade-deleted with the
-    # session's rows.
+    # Quitting mid-cook (the explicit "Stop met koken" button or abandoning a
+    # stale session) must not leave this session's step times baked into the
+    # learned averages. Drop all of this session's samples, then replay the
+    # EWMA for each affected step from whatever's left (or clear the row if
+    # this session was the only contributor). Pending/declined samples never
+    # touched step_durations, so dropping them is a no-op there.
     affected = conn.execute(
         "SELECT DISTINCT recipe_id, track, sort_order FROM step_time_logs WHERE cook_session_id=? AND counted=1",
         (session_id,)
     ).fetchall()
+    conn.execute("DELETE FROM step_time_logs WHERE cook_session_id=?", (session_id,))
     for row in affected:
-        remaining = conn.execute(
-            """SELECT seconds FROM step_time_logs
-               WHERE recipe_id=? AND track=? AND sort_order=? AND counted=1 AND cook_session_id != ?""",
-            (row["recipe_id"], row["track"], row["sort_order"], session_id)
-        ).fetchall()
-        if remaining:
-            seconds_list = [r["seconds"] for r in remaining]
-            new_avg = sum(seconds_list) / len(seconds_list)
-            conn.execute(
-                "UPDATE step_durations SET avg_seconds=?, sample_count=?, updated_at=? WHERE recipe_id=? AND track=? AND sort_order=?",
-                (new_avg, len(seconds_list), _now(), row["recipe_id"], row["track"], row["sort_order"])
-            )
-        else:
-            conn.execute(
-                "DELETE FROM step_durations WHERE recipe_id=? AND track=? AND sort_order=?",
-                (row["recipe_id"], row["track"], row["sort_order"])
-            )
+        recompute_step_duration(conn, row["recipe_id"], row["track"], row["sort_order"])
 
 
 def _fetch_session(conn: Connection, session_id: int) -> dict:
@@ -255,6 +184,25 @@ def _fetch_session(conn: Connection, session_id: int) -> dict:
         (session_id,)
     ).fetchone()
     s["pending_step_confirmation"] = dict(pending) if pending else None
+
+    # Whole-cook "time remaining" estimate — only meaningful while a
+    # cooking-mode session is actually in progress (the person cooking sees
+    # this in CookingMode; the other person sees it via /sessions/active).
+    s["estimated_remaining_seconds"] = None
+    s["estimated_remaining_low_seconds"] = None
+    s["estimated_remaining_high_seconds"] = None
+    if s["cooking_mode"] and s["finished_at"] is None:
+        cook_time = conn.execute(
+            "SELECT cook_time FROM recipes WHERE id = ?", (s["recipe_id"],)
+        ).fetchone()
+        est = _session_estimate(
+            conn, s, cook_time["cook_time"] if cook_time else None,
+            _main_step_rows(conn, s["recipe_id"]),
+        )
+        if est:
+            (s["estimated_remaining_seconds"],
+             s["estimated_remaining_low_seconds"],
+             s["estimated_remaining_high_seconds"]) = est
     return s
 
 
@@ -427,25 +375,9 @@ def confirm_step_time(log_id: int, body: StepTimeConfirmIn, conn: Connection = D
     if log["counted"] is not None:
         raise HTTPException(400, "This step time was already confirmed")
 
+    conn.execute("UPDATE step_time_logs SET counted=? WHERE id=?", (1 if body.counted else 0, log_id))
     if body.counted:
-        existing = conn.execute(
-            "SELECT * FROM step_durations WHERE recipe_id=? AND track=? AND sort_order=?",
-            (log["recipe_id"], log["track"], log["sort_order"])
-        ).fetchone()
-        if existing:
-            new_avg = (existing["avg_seconds"] * existing["sample_count"] + log["seconds"]) / (existing["sample_count"] + 1)
-            conn.execute(
-                "UPDATE step_durations SET avg_seconds=?, sample_count=?, updated_at=? WHERE id=?",
-                (new_avg, existing["sample_count"] + 1, _now(), existing["id"])
-            )
-        else:
-            conn.execute(
-                "INSERT INTO step_durations (recipe_id, track, sort_order, avg_seconds, sample_count, updated_at) VALUES (?,?,?,?,1,?)",
-                (log["recipe_id"], log["track"], log["sort_order"], float(log["seconds"]), _now())
-            )
-        conn.execute("UPDATE step_time_logs SET counted=1 WHERE id=?", (log_id,))
-    else:
-        conn.execute("UPDATE step_time_logs SET counted=0 WHERE id=?", (log_id,))
+        recompute_step_duration(conn, log["recipe_id"], log["track"], log["sort_order"])
     conn.commit()
     return _fetch_session(conn, log["cook_session_id"])
 
@@ -498,10 +430,16 @@ def delete_session(session_id: int, conn: Connection = Depends(get_db)):
     conn.commit()
 
 
+# A cook shorter than this is treated as a mis-tap / instant log, not a real
+# timed session, so it doesn't pollute the recipe's learned typical duration.
+MIN_ACTIVE_SECONDS = 60
+
+
 @router.post("/{session_id}/finish", response_model=CookSessionOut)
 def finish_cooking(session_id: int, conn: Connection = Depends(get_db)):
     session = _fetch_session(conn, session_id)
-    if session["finished_at"] is None and session["cooking_mode"] and session["step_started_at"]:
+    first_finish = session["finished_at"] is None
+    if first_finish and session["cooking_mode"] and session["step_started_at"]:
         main_steps = _main_step_rows(conn, session["recipe_id"])
         if 0 <= session["current_step"] < len(main_steps):
             elapsed = (datetime.now(timezone.utc) - _parse_aware(session["step_started_at"])).total_seconds()
@@ -509,10 +447,21 @@ def finish_cooking(session_id: int, conn: Connection = Depends(get_db)):
                 conn, session["recipe_id"], "main", main_steps[session["current_step"]]["sort_order"],
                 session_id, round(elapsed)
             )
-    conn.execute(
-        "UPDATE cook_sessions SET finished_at=? WHERE id=?",
-        (_now(), session_id)
-    )
+    if first_finish:
+        # Whole-cook wall-clock duration — a recipe-level signal that survives
+        # step edits, unlike the per-step step_durations history. Skipped for
+        # near-instant sessions (a retroactive log, or a fat-fingered finish).
+        active_seconds = None
+        if session["cooking_mode"]:
+            total = (datetime.now(timezone.utc) - _parse_aware(session["cooked_at"])).total_seconds()
+            if total >= MIN_ACTIVE_SECONDS:
+                active_seconds = round(total)
+        conn.execute(
+            "UPDATE cook_sessions SET finished_at=?, active_seconds=? WHERE id=?",
+            (_now(), active_seconds, session_id)
+        )
+    else:
+        conn.execute("UPDATE cook_sessions SET finished_at=? WHERE id=?", (_now(), session_id))
     # A finished cook lands on its day's menu (the day it was started), asking
     # first via plan_conflict if that day already holds a different meal.
     conflict = sync_cooked_meal(conn, session["recipe_id"], _parse_aware(session["cooked_at"]).date())

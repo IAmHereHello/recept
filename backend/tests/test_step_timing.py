@@ -40,7 +40,7 @@ def test_second_observation_within_tolerance_auto_counts(client, tmp_path):
     client.post(f"/sessions/{s1['id']}/step", json={"step_index": 1})
     client.post(f"/sessions/{s1['id']}/finish")
 
-    # 5% off the 100s baseline -> within +-10%, auto-counted
+    # 5s off the 100s baseline -> well inside the 90s absolute floor, auto-counted
     s2 = start_cooking(client, recipe["id"])
     _backdate_step_started(db, s2["id"], 105)
     resp = client.post(f"/sessions/{s2['id']}/step", json={"step_index": 1})
@@ -89,12 +89,12 @@ def test_confirming_outlier_as_counted_updates_average(client, tmp_path):
     db = tmp_path / "test.db"
 
     s1 = start_cooking(client, recipe["id"])
-    _backdate_step_started(db, s1["id"], 100)
+    _backdate_step_started(db, s1["id"], 600)
     client.post(f"/sessions/{s1['id']}/step", json={"step_index": 1})
     client.post(f"/sessions/{s1['id']}/finish")
 
     s2 = start_cooking(client, recipe["id"])
-    _backdate_step_started(db, s2["id"], 200)
+    _backdate_step_started(db, s2["id"], 1400)
     resp = client.post(f"/sessions/{s2['id']}/step", json={"step_index": 1})
     log_id = resp.json()["pending_step_confirmation"]["log_id"]
 
@@ -103,11 +103,11 @@ def test_confirming_outlier_as_counted_updates_average(client, tmp_path):
     assert confirm_resp.json()["pending_step_confirmation"] is None
     client.post(f"/sessions/{s2['id']}/finish")
 
-    # Average is now (100+200)/2=150. A 160s sample is within 10% of 150 but
-    # NOT of the old 100 baseline, so this only stays uncontested if the
-    # average really moved.
+    # EWMA average has moved to ~880s. An 850s sample sits inside the band
+    # around 880 but is 250s off the old 600 baseline (a clear outlier there),
+    # so it only stays uncontested if the average really moved.
     s3 = start_cooking(client, recipe["id"])
-    _backdate_step_started(db, s3["id"], 160)
+    _backdate_step_started(db, s3["id"], 850)
     resp3 = client.post(f"/sessions/{s3['id']}/step", json={"step_index": 1})
     assert resp3.json()["pending_step_confirmation"] is None
 
@@ -117,21 +117,23 @@ def test_declining_outlier_leaves_average_untouched(client, tmp_path):
     db = tmp_path / "test.db"
 
     s1 = start_cooking(client, recipe["id"])
-    _backdate_step_started(db, s1["id"], 100)
+    _backdate_step_started(db, s1["id"], 600)
     client.post(f"/sessions/{s1['id']}/step", json={"step_index": 1})
     client.post(f"/sessions/{s1['id']}/finish")
 
     s2 = start_cooking(client, recipe["id"])
-    _backdate_step_started(db, s2["id"], 200)
+    _backdate_step_started(db, s2["id"], 1400)
     resp = client.post(f"/sessions/{s2['id']}/step", json={"step_index": 1})
     log_id = resp.json()["pending_step_confirmation"]["log_id"]
 
     client.post(f"/sessions/step-time/{log_id}/confirm", json={"counted": False})
     client.post(f"/sessions/{s2['id']}/finish")
 
-    # Average should still be 100 -> a 105s sample (5% off) stays within tolerance.
+    # Average should still be 600. A 680s sample stays inside the band around
+    # 600, but would be a clear outlier against the ~880 the average would have
+    # moved to had the 1400s sample counted.
     s3 = start_cooking(client, recipe["id"])
-    _backdate_step_started(db, s3["id"], 105)
+    _backdate_step_started(db, s3["id"], 680)
     resp3 = client.post(f"/sessions/{s3['id']}/step", json={"step_index": 1})
     assert resp3.json()["pending_step_confirmation"] is None
 
@@ -223,6 +225,74 @@ def test_long_learned_step_no_longer_inflates_remaining_estimate(client, tmp_pat
     assert active["estimated_remaining_seconds"] == 45 * 60 + 120
 
 
+def test_wait_time_minutes_seeds_the_estimate_before_any_learning(client, tmp_path):
+    # First-ever cook: no learned per-step history. The authored wait time on
+    # the bake step must be used for that step directly, with the rest of the
+    # cook_time budget spread over the two hands-on steps -- NOT a flat
+    # cook_time/3 that would under-count the bake and over-count the others.
+    recipe = make_recipe(client, cook_time=95, steps=[
+        {"sort_order": 1, "description": "Prep the tray"},
+        {"sort_order": 2, "description": "Bake"},
+        {"sort_order": 3, "description": "Rest 45 min", "wait_time_minutes": 45},
+    ])
+    session = start_cooking(client, recipe["id"])
+
+    # Sitting on the final wait step: estimate is just that wait (2700s), not
+    # the 95*60/3 = 1900s a flat per-step share would give.
+    client.post(f"/sessions/{session['id']}/step", json={"step_index": 1})
+    client.post(f"/sessions/{session['id']}/step", json={"step_index": 2})
+    active = client.get("/sessions/active").json()
+    assert active["estimated_remaining_seconds"] == 45 * 60
+
+    # And from step 0 the whole estimate still sums to the 95-minute budget:
+    # 2700 wait + (5700-2700)/2 for each hands-on step.
+    s2 = start_cooking(client, recipe["id"], cooked_by="rachel")
+    est = client.get(f"/sessions/{s2['id']}").json()["estimated_remaining_seconds"]
+    assert est == 95 * 60
+
+
+def test_cook_session_exposes_estimate_to_the_cook(client):
+    recipe = make_recipe(client)  # cook_time=45, 2 steps
+    session = start_cooking(client, recipe["id"])
+
+    body = client.get(f"/sessions/{session['id']}").json()
+    assert body["estimated_remaining_seconds"] == 2700
+    assert body["estimated_remaining_low_seconds"] <= 2700 <= body["estimated_remaining_high_seconds"]
+
+    client.post(f"/sessions/{session['id']}/finish")
+    # Finished sessions carry no live estimate.
+    assert client.get(f"/sessions/{session['id']}").json()["estimated_remaining_seconds"] is None
+
+
+def test_finished_cook_records_active_seconds_and_feeds_typical(client, tmp_path):
+    recipe = make_recipe(client)
+    db = tmp_path / "test.db"
+
+    for _ in range(2):
+        s = start_cooking(client, recipe["id"])
+        # Backdate the whole session ~20 minutes so it clears the 60s floor.
+        started = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+        _set_session_fields(db, s["id"], cooked_at=started, step_started_at=started, last_activity_at=started)
+        client.post(f"/sessions/{s['id']}/finish")
+
+    typical = client.get(f"/recipes/{recipe['id']}").json()["typical_cook_seconds"]
+    assert 1150 <= typical <= 1250  # ~1200s
+
+    # A fresh cook's estimate now uses the learned typical duration as its
+    # budget instead of cook_time (45 min).
+    s3 = start_cooking(client, recipe["id"])
+    est = client.get(f"/sessions/{s3['id']}").json()["estimated_remaining_seconds"]
+    assert 1150 <= est <= 1250
+
+
+def test_retroactively_logged_meal_does_not_set_active_seconds(client):
+    recipe = make_recipe(client)
+    client.post("/sessions/log", json={
+        "recipe_id": recipe["id"], "cooked_at": "2026-01-02", "cooked_by": "michael",
+    })
+    assert client.get(f"/recipes/{recipe['id']}").json()["typical_cook_seconds"] is None
+
+
 def test_meanwhile_steps_excluded_from_progression_and_estimate(client):
     recipe = make_recipe(client, cook_time=30, steps=[
         {"sort_order": 1, "description": "Prep"},
@@ -308,23 +378,24 @@ def test_quit_session_undoes_its_own_counted_contribution_but_keeps_others(clien
     db = tmp_path / "test.db"
 
     s1 = start_cooking(client, recipe["id"])
-    _backdate_step_started(db, s1["id"], 100)
-    client.post(f"/sessions/{s1['id']}/step", json={"step_index": 1})  # baseline avg=100
+    _backdate_step_started(db, s1["id"], 600)
+    client.post(f"/sessions/{s1['id']}/step", json={"step_index": 1})  # baseline avg=600
     client.post(f"/sessions/{s1['id']}/finish")
 
     s2 = start_cooking(client, recipe["id"])
-    _backdate_step_started(db, s2["id"], 105)  # 5% off -> auto-counted, avg becomes 102.5
+    _backdate_step_started(db, s2["id"], 660)  # 60s off -> auto-counted, EWMA avg ~621
     resp = client.post(f"/sessions/{s2['id']}/step", json={"step_index": 1})
     assert resp.json()["pending_step_confirmation"] is None
 
     quit_resp = client.delete(f"/sessions/{s2['id']}")
     assert quit_resp.status_code == 204
 
-    # Average should be back to exactly 100 (s1's contribution only) -> a
-    # 112s sample is 12% off 100 (outlier) but only 9.3% off 102.5, so this
-    # only stays an outlier if s2's contribution was genuinely undone.
+    # Average should be back to exactly 600 (s1's contribution only) -> a 700s
+    # sample is 100s off 600 (an outlier past the 90s floor) but only ~79s off
+    # the 621 the average would sit at, so it only stays an outlier if s2's
+    # contribution was genuinely undone.
     s3 = start_cooking(client, recipe["id"])
-    _backdate_step_started(db, s3["id"], 112)
+    _backdate_step_started(db, s3["id"], 700)
     resp = client.post(f"/sessions/{s3['id']}/step", json={"step_index": 1})
     assert resp.json()["pending_step_confirmation"] is not None
 
@@ -353,21 +424,23 @@ def test_quit_session_with_pending_confirmation_does_not_affect_average(client, 
     db = tmp_path / "test.db"
 
     s1 = start_cooking(client, recipe["id"])
-    _backdate_step_started(db, s1["id"], 100)
-    client.post(f"/sessions/{s1['id']}/step", json={"step_index": 1})  # baseline avg=100
+    _backdate_step_started(db, s1["id"], 600)
+    client.post(f"/sessions/{s1['id']}/step", json={"step_index": 1})  # baseline avg=600
     client.post(f"/sessions/{s1['id']}/finish")
 
     s2 = start_cooking(client, recipe["id"])
-    _backdate_step_started(db, s2["id"], 300)  # wild outlier vs 100 -> pending, never counted
+    _backdate_step_started(db, s2["id"], 1400)  # wild outlier vs 600 -> pending, never counted
     resp = client.post(f"/sessions/{s2['id']}/step", json={"step_index": 1})
     assert resp.json()["pending_step_confirmation"] is not None
 
     quit_resp = client.delete(f"/sessions/{s2['id']}")
     assert quit_resp.status_code == 204
 
-    # Average should still be exactly 100 -- the pending sample never counted
-    # in the first place, so quitting has nothing to undo for it.
+    # Average should still be exactly 600 -- the pending sample never counted
+    # in the first place, so quitting has nothing to undo for it. A 680s sample
+    # stays inside the band around 600 but would be an outlier against the ~880
+    # the average would have reached had the pending 1400s counted.
     s3 = start_cooking(client, recipe["id"])
-    _backdate_step_started(db, s3["id"], 105)
+    _backdate_step_started(db, s3["id"], 680)
     resp = client.post(f"/sessions/{s3['id']}/step", json={"step_index": 1})
     assert resp.json()["pending_step_confirmation"] is None

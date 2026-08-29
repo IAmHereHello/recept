@@ -6,6 +6,7 @@ import { StarRating } from '../components/StarRating'
 import { Badge } from '../components/Badge'
 import { HealthBadge, HealthScale } from '../components/HealthBadge'
 import { PlanConflictDialog } from '../components/PlanConflictDialog'
+import { recipeTimeEstimate } from '../lib/recipeTime'
 import {
   Clock, ChefHat, Pencil, Trash2, Play, X, Users, Search, ChevronDown, Leaf, Loader2, CalendarPlus
 } from 'lucide-react'
@@ -143,6 +144,7 @@ export function RecipeDetail() {
   if (!recipe) return <div className="p-6 text-center text-gray-400">Niet gevonden.</div>
 
   const latestSession = sessions[0]
+  const timeEst = recipeTimeEstimate(recipe)
   const mainSteps = (recipe.steps || []).filter(s => s.track !== 'meanwhile')
   const meanwhileSteps = (recipe.steps || []).filter(s => s.track === 'meanwhile')
   const filteredPairCandidates = pairCandidates.filter(r =>
@@ -180,12 +182,20 @@ export function RecipeDetail() {
           {!recipe.is_vegan && recipe.is_vegetarian && <Badge color="green">Vegetarisch</Badge>}
           {recipe.cuisine_type && <Badge>{recipe.cuisine_type}</Badge>}
           {recipe.difficulty && <Badge color="amber">{DIFF_LABELS[recipe.difficulty]}</Badge>}
-          {recipe.cook_time && (
+          {timeEst && (
             <Badge color="blue">
-              <span className="flex items-center gap-1"><Clock size={10} /> {recipe.cook_time} min</span>
+              <span className="flex items-center gap-1">
+                <Clock size={10} /> {timeEst.measured ? '~' : ''}{timeEst.minutes} min{recipe.prep_time ? ` · ${recipe.prep_time} min actief` : ''}
+              </span>
             </Badge>
           )}
         </div>
+
+        {timeEst?.measured && (
+          <p className="text-xs text-gray-400 mb-4">
+            Gemiddelde van jullie kooksessies{recipe.cook_time ? ` · recept: ${recipe.cook_time} min` : ''}
+          </p>
+        )}
 
         {recipe.avg_rating && (
           <div className="flex items-center gap-2 mb-4">

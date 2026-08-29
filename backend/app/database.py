@@ -64,6 +64,7 @@ def init_db():
             track TEXT NOT NULL DEFAULT 'main' CHECK(track IN ('main','meanwhile')),
             sort_order INTEGER NOT NULL,
             avg_seconds REAL NOT NULL,
+            stddev_seconds REAL NOT NULL DEFAULT 0,
             sample_count INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(recipe_id, track, sort_order)
@@ -222,6 +223,23 @@ def init_db():
     if "group_id" not in cols:
         conn.execute("ALTER TABLE cook_sessions ADD COLUMN group_id INTEGER REFERENCES session_groups(id) ON DELETE SET NULL")
 
+    # Migration: active_seconds is the wall-clock duration of a finished
+    # cooking-mode session (cooked_at -> finished_at), stored per session so the
+    # median of recent cooks can seed the "time remaining" estimate. It's a
+    # recipe-level signal that survives step edits, unlike the per-step
+    # step_durations history. NULL for legacy rows and retroactively logged
+    # meals (which have finished_at == cooked_at).
+    if "active_seconds" not in cols:
+        conn.execute("ALTER TABLE cook_sessions ADD COLUMN active_seconds INTEGER")
+
+    # Migration: step_durations gains an EWMA standard deviation alongside the
+    # rolling mean, so outlier detection can use +-2 sigma once enough samples
+    # exist and the UI can show an estimate range. Old rows default to 0 and
+    # get a real value the next time a sample for that step is recorded.
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(step_durations)").fetchall()]
+    if "stddev_seconds" not in cols:
+        conn.execute("ALTER TABLE step_durations ADD COLUMN stddev_seconds REAL NOT NULL DEFAULT 0")
+
     # Migration: AI healthiness score (0-100) plus its rationale and a
     # "gezonder maken" tip for the recipe detail "lees meer" panel. All
     # nullable — a recipe is simply "not yet scored" until health-review runs,
@@ -236,6 +254,12 @@ def init_db():
         conn.execute("ALTER TABLE recipes ADD COLUMN health_tip TEXT")
     if "health_scored_at" not in cols:
         conn.execute("ALTER TABLE recipes ADD COLUMN health_scored_at TEXT")
+
+    # Migration: prep_time (hands-on minutes, no waiting/oven time) sits
+    # alongside cook_time, which now means total time start-to-table. Both
+    # nullable; the URL importer fills them from schema.org prepTime/totalTime.
+    if "prep_time" not in cols:
+        conn.execute("ALTER TABLE recipes ADD COLUMN prep_time INTEGER")
 
     # Migration: a recipe's own cover image (a "/uploads/<uuid>.<ext>" path
     # served by the static mount, same as cook-session photos). Currently only

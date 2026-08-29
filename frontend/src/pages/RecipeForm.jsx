@@ -6,7 +6,7 @@ import { StepEditor, stepsFromApi, stepsToApi } from '../components/StepEditor'
 import { RecipeImagePicker } from '../components/RecipeImagePicker'
 
 const EMPTY = {
-  name: '', description: '', cook_time: '', difficulty: '',
+  name: '', description: '', cook_time: '', prep_time: '', difficulty: '',
   cuisine_type: '', is_vegetarian: false, is_vegan: false,
   is_side_dish: false, is_baking: false,
   portions: '', is_freezable: true, freezer_months: '',
@@ -37,7 +37,7 @@ export function RecipeForm() {
   useEffect(() => {
     if (isEdit) {
       api.getRecipe(id).then(r => {
-        setForm({ ...r, cook_time: r.cook_time ?? '', portions: r.portions ?? '', freezer_months: r.freezer_months ?? '' })
+        setForm({ ...r, cook_time: r.cook_time ?? '', prep_time: r.prep_time ?? '', portions: r.portions ?? '', freezer_months: r.freezer_months ?? '' })
         setIngredientPhase('amounts')
         setEditorSteps(stepsFromApi(r.steps))
         setLoading(false)
@@ -93,6 +93,7 @@ export function RecipeForm() {
         ...f,
         ...data,
         cook_time: data.cook_time ?? '',
+        prep_time: data.prep_time ?? '',
         ingredients: (data.ingredients || []).map((ing, i) => ({ ...ing, sort_order: i })),
       }))
       setIngredientPhase('amounts')
@@ -113,6 +114,7 @@ export function RecipeForm() {
       const payload = {
         ...form,
         cook_time: form.cook_time ? Number(form.cook_time) : null,
+        prep_time: form.prep_time ? Number(form.prep_time) : null,
         difficulty: form.difficulty || null,
         portions: form.portions ? Number(form.portions) : null,
         freezer_months: form.freezer_months ? Number(form.freezer_months) : null,
@@ -197,10 +199,19 @@ export function RecipeForm() {
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Bereidingstijd (min)</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Totale tijd (min)</label>
             <input type="number" min="1" value={form.cook_time} onChange={e => set('cook_time', e.target.value)}
               className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
+            <p className="text-xs text-gray-400 mt-1">begin tot bord, incl. wachten</p>
           </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Actieve tijd (min)</label>
+            <input type="number" min="1" value={form.prep_time} onChange={e => set('prep_time', e.target.value)}
+              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
+            <p className="text-xs text-gray-400 mt-1">handwerk, zonder oven/wachten</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Moeilijkheid</label>
             <select value={form.difficulty} onChange={e => set('difficulty', e.target.value)}
@@ -211,12 +222,12 @@ export function RecipeForm() {
               <option value="hard">Moeilijk</option>
             </select>
           </div>
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Keuken</label>
-          <input value={form.cuisine_type || ''} onChange={e => set('cuisine_type', e.target.value)}
-            placeholder="Italiaans, Aziatisch..."
-            className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Keuken</label>
+            <input value={form.cuisine_type || ''} onChange={e => set('cuisine_type', e.target.value)}
+              placeholder="Italiaans, Aziatisch..."
+              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-500" />
+          </div>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>

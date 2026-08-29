@@ -20,8 +20,25 @@ function formatTime(totalSeconds) {
 }
 
 function formatDuration(seconds) {
+  if (seconds == null) return '—'
   if (seconds < 90) return `${Math.round(seconds)} sec`
   return `${Math.round(seconds / 60)} min`
+}
+
+// "nog ~25 min" — a range when the learned spread is wide, a point otherwise.
+function formatRemaining(estimate, liveSeconds) {
+  const m = Math.round(liveSeconds / 60)
+  if (m <= 1) return 'bijna klaar'
+  const spread = estimate.mid > 0 ? (estimate.high - estimate.low) / estimate.mid : 0
+  if (spread > 0.5) {
+    return `nog ${Math.max(1, Math.round(estimate.low / 60))}–${Math.round(estimate.high / 60)} min`
+  }
+  return `nog ~${m} min`
+}
+
+function formatClock(secondsFromNow) {
+  return new Date(Date.now() + secondsFromNow * 1000)
+    .toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })
 }
 
 const HEARTBEAT_INTERVAL_MS = 60000
@@ -43,12 +60,29 @@ export function CookingMode() {
   const [meanwhileIndex, setMeanwhileIndex] = useState(0)
   const [pendingConfirmation, setPendingConfirmation] = useState(null)
   const [planConflict, setPlanConflict] = useState(null)
+  const [estimate, setEstimate] = useState(null) // { mid, low, high, at } seconds, or null
+  const [, forceTick] = useState(0)
   const wakeLockRef = useRef(null)
   const audioCtxRef = useRef(null)
+  const finishingRef = useRef(false)
   const me = getUser()
 
   const mainSteps = (recipe?.steps || []).filter(s => s.track !== 'meanwhile')
   const meanwhileSteps = (recipe?.steps || []).filter(s => s.track === 'meanwhile')
+
+  function applyEstimate(session) {
+    const mid = session?.estimated_remaining_seconds
+    if (mid == null) {
+      setEstimate(null)
+      return
+    }
+    setEstimate({
+      mid,
+      low: session.estimated_remaining_low_seconds ?? mid,
+      high: session.estimated_remaining_high_seconds ?? mid,
+      at: Date.now(),
+    })
+  }
 
   function restoreTimerFromSession(session) {
     if (session.timer_seconds == null || session.timer_started_at == null) return
@@ -75,6 +109,7 @@ export function CookingMode() {
     setMeanwhileIndex(0)
     setPhase('steps')
     setShowStaleDialog(false)
+    setEstimate(null)
     Promise.all([api.getRecipe(id), api.getSession(sessionId)]).then(([r, session]) => {
       setRecipe(r)
       if (session.finished_at) {
@@ -92,6 +127,7 @@ export function CookingMode() {
       } else {
         restoreTimerFromSession(session)
         setPendingConfirmation(session.pending_step_confirmation || null)
+        applyEstimate(session)
       }
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -109,6 +145,14 @@ export function CookingMode() {
     const interval = setInterval(ping, HEARTBEAT_INTERVAL_MS)
     return () => clearInterval(interval)
   }, [sessionId, showStaleDialog])
+
+  // Keep the "time remaining" text roughly current between step changes
+  // without polling — the estimate itself is recomputed server-side on every
+  // step/timer action.
+  useEffect(() => {
+    const iv = setInterval(() => forceTick(t => t + 1), 30000)
+    return () => clearInterval(iv)
+  }, [])
 
   // Unlock audio playback on the first tap anywhere on the page — creating/
   // resuming the AudioContext requires a user gesture, and the alarm later
@@ -162,6 +206,7 @@ export function CookingMode() {
     const session = await api.touchSession(sessionId).then(() => api.getSession(sessionId))
     restoreTimerFromSession(session)
     setPendingConfirmation(session.pending_step_confirmation || null)
+    applyEstimate(session)
     setShowStaleDialog(false)
   }
 
@@ -217,16 +262,18 @@ export function CookingMode() {
   async function startTimer(minutes) {
     getAudioContext() // warm/resume on this click so the later alarm can play unattended
     const seconds = minutes * 60
-    await api.startTimer(sessionId, seconds)
+    const updated = await api.startTimer(sessionId, seconds)
     setTimerEndAt(Date.now() + seconds * 1000)
     setRemaining(seconds)
     setTimerDone(false)
     setMeanwhileIndex(0)
+    applyEstimate(updated)
   }
 
   async function cancelTimer() {
     resetLocalTimer()
     await api.clearTimer(sessionId)
+    api.getSession(sessionId).then(applyEstimate).catch(() => {})
   }
 
   async function goToStep(index) {
@@ -235,6 +282,7 @@ export function CookingMode() {
     resetLocalTimer()
     setMeanwhileIndex(0)
     setPendingConfirmation(updated?.pending_step_confirmation || null)
+    applyEstimate(updated)
   }
 
   async function next() {
@@ -252,10 +300,15 @@ export function CookingMode() {
   async function finish() {
     const result = await api.finishCooking(sessionId)
     wakeLockRef.current?.release?.()
-    if (result?.plan_conflict) {
-      setPlanConflict(result.plan_conflict)
-      return  // resolve the conflict before leaving
+    if (result?.plan_conflict) setPlanConflict(result.plan_conflict)
+    // The final step's time is logged by /finish — if it went long, answer the
+    // (non-blocking) card before leaving rather than dropping the sample.
+    if (result?.pending_step_confirmation) {
+      setPendingConfirmation(result.pending_step_confirmation)
+      finishingRef.current = true
+      return
     }
+    if (result?.plan_conflict) return  // resolve the conflict before leaving
     navigate(`/recipes/${id}`)
   }
 
@@ -268,8 +321,18 @@ export function CookingMode() {
 
   async function respondToConfirmation(counted) {
     if (!pendingConfirmation) return
-    await api.confirmStepTime(pendingConfirmation.log_id, counted)
-    setPendingConfirmation(null)
+    const updated = await api.confirmStepTime(pendingConfirmation.log_id, counted)
+    // Confirming resolves one sample; if earlier steps also went long, the
+    // response carries the next one to ask about.
+    const nextPending = updated?.pending_step_confirmation || null
+    setPendingConfirmation(nextPending)
+    applyEstimate(updated)
+    // If we were waiting on this to leave the finish screen, go now.
+    if (!nextPending && finishingRef.current) {
+      finishingRef.current = false
+      if (planConflict) return  // the conflict dialog is already up
+      navigate(`/recipes/${id}`)
+    }
   }
 
   function switchToSession(g) {
@@ -279,29 +342,39 @@ export function CookingMode() {
 
   if (!recipe) return <div className="p-6 text-center text-gray-400">Laden...</div>
 
+  // A quiet card pinned above the nav — it never covers the step you're on,
+  // so you can answer it whenever (or ignore it; an unanswered sample just
+  // never counts).
   const confirmationDialog = pendingConfirmation && (
-    <div className="fixed inset-0 bg-black/40 z-[90] flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl p-5 w-full max-w-sm">
-        <h2 className="text-base font-bold text-gray-900 mb-2">Tijd kloppend?</h2>
-        <p className="text-sm text-gray-600 mb-5">
+    <div className="fixed inset-x-0 bottom-20 z-[90] px-4 pointer-events-none">
+      <div className="max-w-lg mx-auto bg-white rounded-2xl p-4 shadow-xl border border-gray-200 pointer-events-auto">
+        <h2 className="text-sm font-bold text-gray-900 mb-1">Tijd kloppend?</h2>
+        <p className="text-xs text-gray-600 mb-3">
           Deze stap duurde {formatDuration(pendingConfirmation.seconds)}, normaal {formatDuration(pendingConfirmation.avg_seconds)}.
-          Moet dit meetellen voor de gemiddelde tijd?
+          Meetellen voor de gemiddelde tijd?
         </p>
-        <div className="flex gap-3">
+        <div className="flex gap-2">
           <button
             onClick={() => respondToConfirmation(false)}
-            className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-50 transition"
+            className="flex-1 py-2 border border-gray-200 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-50 transition"
           >
             Nee
           </button>
           <button
             onClick={() => respondToConfirmation(true)}
-            className="flex-1 bg-green-600 text-white py-2.5 rounded-xl text-sm font-medium hover:bg-green-700 transition"
+            className="flex-1 bg-green-600 text-white py-2 rounded-lg text-xs font-medium hover:bg-green-700 transition"
           >
             Ja, meetellen
           </button>
         </div>
       </div>
+    </div>
+  )
+
+  const liveRemaining = estimate ? Math.max(0, estimate.mid - (Date.now() - estimate.at) / 1000) : null
+  const estimateLine = estimate && (
+    <div className="text-center text-xs text-gray-400 mb-4">
+      {formatRemaining(estimate, liveRemaining)} · klaar rond {formatClock(liveRemaining)}
     </div>
   )
 
@@ -380,7 +453,8 @@ export function CookingMode() {
           Stop met koken
         </button>
       </div>
-      <h1 className="text-lg font-semibold text-gray-900 mb-6">{recipe.name}</h1>
+      <h1 className={`text-lg font-semibold text-gray-900 ${estimate ? 'mb-1' : 'mb-6'}`}>{recipe.name}</h1>
+      {estimateLine}
 
       <div className="flex-1 flex items-center justify-center text-center px-2">
         <p className="text-xl text-gray-800">{step.description}</p>

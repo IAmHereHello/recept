@@ -52,6 +52,20 @@ describe('RecipeForm freezer fields', () => {
     )
   })
 
+  it('submits total (cook_time) and active (prep_time) minutes as numbers', async () => {
+    const user = userEvent.setup()
+    renderForm()
+
+    await user.type(inputNear('Naam *'), 'Ovenschotel')
+    await user.type(inputNear('Totale tijd (min)'), '75')
+    await user.type(inputNear('Actieve tijd (min)'), '20')
+    await user.click(screen.getByRole('button', { name: /Recept aanmaken/ }))
+
+    expect(api.createRecipe).toHaveBeenCalledWith(
+      expect.objectContaining({ cook_time: 75, prep_time: 20 })
+    )
+  })
+
   it('auto-runs a health review after creating a recipe', async () => {
     const user = userEvent.setup()
     renderForm()

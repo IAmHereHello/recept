@@ -425,6 +425,62 @@ describe('CookingMode', () => {
     vi.unstubAllGlobals()
   })
 
+  it('shows a "time remaining" line when the session carries an estimate', async () => {
+    stubWakeLock()
+    api.getSession.mockResolvedValue({
+      id: 5, current_step: 0, finished_at: null, is_stale: false,
+      estimated_remaining_seconds: 1500,
+      estimated_remaining_low_seconds: 1400,
+      estimated_remaining_high_seconds: 1600,
+    })
+    renderCookingMode()
+
+    expect(await screen.findByText(/nog ~25 min · klaar rond/)).toBeInTheDocument()
+
+    vi.unstubAllGlobals()
+  })
+
+  it('shows a range instead of a point estimate when the learned spread is wide', async () => {
+    stubWakeLock()
+    api.getSession.mockResolvedValue({
+      id: 5, current_step: 0, finished_at: null, is_stale: false,
+      estimated_remaining_seconds: 1200,
+      estimated_remaining_low_seconds: 600,
+      estimated_remaining_high_seconds: 1800,
+    })
+    renderCookingMode()
+
+    expect(await screen.findByText(/nog 10–30 min · klaar rond/)).toBeInTheDocument()
+
+    vi.unstubAllGlobals()
+  })
+
+  it('surfaces a final-step outlier confirmation on finish and leaves only once answered', async () => {
+    stubWakeLock()
+    const user = userEvent.setup()
+    api.finishCooking.mockResolvedValue({
+      pending_step_confirmation: { log_id: 99, track: 'main', sort_order: 2, seconds: 600, avg_seconds: 120 },
+    })
+    renderCookingMode()
+    await screen.findByText('Stap 1 van 2')
+
+    await user.click(screen.getByText('Volgende'))
+    await screen.findByText('Stap 2 van 2')
+    await user.click(screen.getByText('Klaar met stappen'))
+    await screen.findByText('Klaar met koken!')
+    await user.click(screen.getByRole('button', { name: /^Klaar$/ }))
+
+    // Still on the finish screen with the card up — not navigated away.
+    expect(await screen.findByText('Tijd kloppend?')).toBeInTheDocument()
+    expect(screen.queryByText('Recipe detail page')).not.toBeInTheDocument()
+
+    await user.click(screen.getByText('Ja, meetellen'))
+    expect(api.confirmStepTime).toHaveBeenCalledWith(99, true)
+    expect(await screen.findByText('Recipe detail page')).toBeInTheDocument()
+
+    vi.unstubAllGlobals()
+  })
+
   it('does not show the quit-cooking button on the finish/photo phase', async () => {
     stubWakeLock()
     const user = userEvent.setup()

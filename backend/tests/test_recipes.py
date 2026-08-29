@@ -12,6 +12,25 @@ def test_create_recipe_returns_computed_fields(client):
     assert recipe["cover_photo"] is None
 
 
+def test_prep_time_round_trips_through_create_and_update(client):
+    recipe = make_recipe(client, cook_time=90, prep_time=25)
+    assert recipe["cook_time"] == 90
+    assert recipe["prep_time"] == 25
+
+    updated = client.put(f"/recipes/{recipe['id']}", json={
+        **{k: recipe[k] for k in ("name", "description", "difficulty", "cuisine_type",
+                                  "is_vegetarian", "is_vegan", "ingredients", "steps")},
+        "cook_time": 80,
+        "prep_time": 20,
+    }).json()
+    assert updated["cook_time"] == 80
+    assert updated["prep_time"] == 20
+
+
+def test_prep_time_defaults_to_null(client):
+    assert make_recipe(client)["prep_time"] is None
+
+
 def test_create_recipe_freezer_fields_default(client):
     recipe = make_recipe(client)
     assert recipe["is_freezable"] is True

@@ -196,6 +196,25 @@ def test_import_feeds_jsonld_recipe_to_ai_when_present(client, monkeypatch):
     assert "250 g winterpeen" in sent
 
 
+def test_import_passes_through_prep_time_and_step_wait_times(client, monkeypatch):
+    _patch(
+        monkeypatch,
+        reply_text=(
+            '{"name": "Ovenschotel", "cook_time": 75, "prep_time": 20, '
+            '"steps": [{"sort_order": 1, "description": "Snijd de groenten", "wait_time_minutes": null}, '
+            '{"sort_order": 2, "description": "Bak 45 minuten", "wait_time_minutes": 45}]}'
+        ),
+    )
+    resp = client.post("/import/", json={"url": "https://example.com/recipe"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["prep_time"] == 20
+    assert body["steps"][1]["wait_time_minutes"] == 45
+    # The system prompt tells the model what these fields mean.
+    assert "wait_time_minutes" in import_recipe_module.SYSTEM_PROMPT
+    assert "totalTime" in import_recipe_module.SYSTEM_PROMPT
+
+
 def test_import_falls_back_to_html_without_jsonld(client, monkeypatch):
     _patch(
         monkeypatch,

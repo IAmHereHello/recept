@@ -24,6 +24,7 @@ Extract the recipe and return ONLY valid JSON in this exact shape:
   "name": "...",
   "description": "...",
   "cook_time": 30,
+  "prep_time": 15,
   "difficulty": "easy|medium|hard",
   "cuisine_type": "...",
   "is_vegetarian": false,
@@ -32,10 +33,17 @@ Extract the recipe and return ONLY valid JSON in this exact shape:
     {"name": "...", "amount": "...", "unit": "...", "sort_order": 0}
   ],
   "steps": [
-    {"sort_order": 1, "description": "..."}
+    {"sort_order": 1, "description": "...", "wait_time_minutes": null}
   ]
 }
-cook_time is in minutes as an integer (convert ISO 8601 durations like PT40M).
+All times are integer minutes (convert ISO 8601 durations like PT40M).
+cook_time = total time from starting to serving. Prefer schema.org totalTime;
+otherwise prepTime + cookTime added together; otherwise your best estimate.
+prep_time = hands-on time only, excluding unattended waiting (rising, marinating,
+oven, simmering). null if the source gives no basis for it.
+wait_time_minutes = for a step that is mostly unattended waiting (e.g. "bake 25
+minutes", "let rest 1 hour", "simmer 30 min"), the minutes to wait; null for
+normal hands-on steps.
 Split each ingredient string into amount (number/fraction as text), unit (g, ml, el, tl, teen, blik, snufje, ...), and the bare ingredient name.
 difficulty is your judgement from the steps if the source doesn't state it.
 Keep step text in the source language. If you cannot determine a field, use null.

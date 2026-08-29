@@ -46,7 +46,8 @@ class StepIn(BaseModel):
 class RecipeIn(BaseModel):
     name: str
     description: Optional[str] = None
-    cook_time: Optional[int] = None
+    cook_time: Optional[int] = None  # total time, start to table (minutes)
+    prep_time: Optional[int] = None  # hands-on time only, no waiting/oven (minutes)
     difficulty: Optional[Difficulty] = None
     cuisine_type: Optional[str] = None
     is_vegetarian: bool = False
@@ -69,6 +70,10 @@ class RecipeOut(RecipeIn):
     avg_rating: Optional[float] = None
     last_cooked: Optional[str] = None
     cover_photo: Optional[str] = None
+    # Median wall-clock duration of recent finished cooking-mode sessions
+    # (>= 2 samples), or None. A learned "this really takes us ~X" that the
+    # planner/estimate prefer over the authored cook_time when available.
+    typical_cook_seconds: Optional[int] = None
     health_score: Optional[int] = None
     health_grade: Optional[str] = None
     health_rationale: Optional[str] = None
@@ -95,7 +100,9 @@ class PendingStepConfirmationOut(BaseModel):
     track: StepTrack
     sort_order: int
     seconds: int
-    avg_seconds: float
+    # Nullable: another session quitting can withdraw the last sample and
+    # delete the step_durations row while this confirmation is still pending.
+    avg_seconds: Optional[float] = None
 
 
 class PlanConflictOut(BaseModel):
@@ -121,6 +128,11 @@ class CookSessionOut(BaseModel):
     is_stale: bool = False
     group_id: Optional[int] = None
     pending_step_confirmation: Optional[PendingStepConfirmationOut] = None
+    # Whole-cook time-remaining estimate (only while in progress). low/high
+    # bracket it using the learned per-step spread.
+    estimated_remaining_seconds: Optional[int] = None
+    estimated_remaining_low_seconds: Optional[int] = None
+    estimated_remaining_high_seconds: Optional[int] = None
     ratings: List[dict] = []
     photos: List[PhotoOut] = []
     # Set only by /finish and /log when the cooked meal's day already held a
@@ -145,6 +157,8 @@ class ActiveSessionOut(BaseModel):
     total_steps: int
     active_timer_remaining_seconds: Optional[int] = None
     estimated_remaining_seconds: Optional[int] = None
+    estimated_remaining_low_seconds: Optional[int] = None
+    estimated_remaining_high_seconds: Optional[int] = None
     is_stale: bool = False
     group_id: Optional[int] = None
 

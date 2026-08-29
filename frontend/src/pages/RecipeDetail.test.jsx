@@ -57,6 +57,22 @@ describe('RecipeDetail rating edit/delete', () => {
     api.getSessions.mockResolvedValue([SESSION])
   })
 
+  it('shows the measured cook time (rounded, ~-prefixed) once there is cook history', async () => {
+    api.getRecipe.mockResolvedValue({ ...RECIPE, cook_time: 45, prep_time: 20, typical_cook_seconds: 3000 })
+    renderDetail()
+
+    expect(await screen.findByText(/~50 min · 20 min actief/)).toBeInTheDocument()
+    expect(screen.getByText(/recept: 45 min/)).toBeInTheDocument()
+  })
+
+  it('falls back to the authored time when there is no cook history', async () => {
+    api.getRecipe.mockResolvedValue({ ...RECIPE, cook_time: 45, prep_time: null, typical_cook_seconds: null })
+    renderDetail()
+
+    expect(await screen.findByText('45 min')).toBeInTheDocument()
+    expect(screen.queryByText(/Gemiddelde van jullie/)).not.toBeInTheDocument()
+  })
+
   it('shows edit/delete icons only for the current user\'s own rating', async () => {
     setUser('michael')
     renderDetail()
