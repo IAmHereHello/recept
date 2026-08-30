@@ -293,6 +293,56 @@ def test_retroactively_logged_meal_does_not_set_active_seconds(client):
     assert client.get(f"/recipes/{recipe['id']}").json()["typical_cook_seconds"] is None
 
 
+def test_wait_step_without_a_timer_is_not_logged(client, tmp_path):
+    # A wait step you clicked past without ever timing tells us nothing real
+    # about how long the wait takes — don't learn from it.
+    recipe = make_recipe(client, cook_time=60, steps=[
+        {"sort_order": 1, "description": "Prep"},
+        {"sort_order": 2, "description": "Rijzen", "wait_time_minutes": 45},
+    ])
+    db = tmp_path / "test.db"
+    s = start_cooking(client, recipe["id"])
+    client.post(f"/sessions/{s['id']}/step", json={"step_index": 1})  # onto the wait step
+    _backdate_step_started(db, s["id"], 30)  # "waited" 30s, no timer
+    client.post(f"/sessions/{s['id']}/finish")
+
+    conn = sqlite3.connect(db)
+    logged = conn.execute(
+        "SELECT count(*) FROM step_time_logs WHERE recipe_id=? AND sort_order=2", (recipe["id"],)
+    ).fetchone()[0]
+    conn.close()
+    assert logged == 0
+
+
+def test_wait_step_is_logged_once_its_timer_has_run(client, tmp_path):
+    recipe = make_recipe(client, cook_time=60, steps=[
+        {"sort_order": 1, "description": "Prep"},
+        {"sort_order": 2, "description": "Bak", "wait_time_minutes": 30},
+    ])
+    db = tmp_path / "test.db"
+    s = start_cooking(client, recipe["id"])
+    client.post(f"/sessions/{s['id']}/step", json={"step_index": 1})
+
+    # An expired timer for this step + some elapsed time on it.
+    started = (datetime.now(timezone.utc) - timedelta(minutes=40)).isoformat()
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE cook_sessions SET timer_seconds=1800, timer_started_at=?, step_started_at=? WHERE id=?",
+        (started, started, s["id"]),
+    )
+    conn.commit()
+    conn.close()
+
+    client.post(f"/sessions/{s['id']}/finish")
+
+    conn = sqlite3.connect(db)
+    row = conn.execute(
+        "SELECT avg_seconds FROM step_durations WHERE recipe_id=? AND sort_order=2", (recipe["id"],)
+    ).fetchone()
+    conn.close()
+    assert row is not None and row[0] > 30 * 60  # ~40 min recorded
+
+
 def test_meanwhile_steps_excluded_from_progression_and_estimate(client):
     recipe = make_recipe(client, cook_time=30, steps=[
         {"sort_order": 1, "description": "Prep"},

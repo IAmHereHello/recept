@@ -1,3 +1,6 @@
+import sqlite3
+from datetime import datetime, timedelta, timezone
+
 from tests.conftest import make_recipe
 
 
@@ -28,14 +31,40 @@ def test_legacy_session_is_finished_immediately(client):
 def test_advance_step_updates_current_step_and_resets_timer(client):
     recipe = make_recipe(client)  # 2 steps
     session = start_cooking(client, recipe["id"])
-    client.post(f"/sessions/{session['id']}/timer", json={"seconds": 60})
 
     resp = client.post(f"/sessions/{session['id']}/step", json={"step_index": 1})
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["current_step"] == 1
+    assert resp.json()["current_step"] == 1
 
-    # advancing clears any timer that was running for the previous step
+
+def test_advance_while_timer_live_is_a_preview_not_a_move(client):
+    recipe = make_recipe(client)  # 2 steps
+    session = start_cooking(client, recipe["id"])
+    client.post(f"/sessions/{session['id']}/timer", json={"seconds": 600})
+
+    # Stepping while a timer counts down = looking around, not moving on.
+    body = client.post(f"/sessions/{session['id']}/step", json={"step_index": 1}).json()
+    assert body["current_step"] == 0  # unchanged
+
+    active = client.get("/sessions/active").json()
+    assert active["active_timer_remaining_seconds"] == 600  # timer untouched
+
+
+def test_advance_after_timer_expired_moves_and_clears(client, tmp_path):
+    recipe = make_recipe(client)
+    session = start_cooking(client, recipe["id"])
+    # A timer that started 20 min ago with a 10 min duration has long expired.
+    started = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+    conn = sqlite3.connect(tmp_path / "test.db")
+    conn.execute(
+        "UPDATE cook_sessions SET timer_seconds=600, timer_started_at=? WHERE id=?",
+        (started, session["id"]),
+    )
+    conn.commit()
+    conn.close()
+
+    body = client.post(f"/sessions/{session['id']}/step", json={"step_index": 1}).json()
+    assert body["current_step"] == 1
     active = client.get("/sessions/active").json()
     assert active["active_timer_remaining_seconds"] is None
 
@@ -119,7 +148,9 @@ def test_active_session_computes_remaining_seconds_from_step_and_timer(client):
     assert active["active_timer_remaining_seconds"] == 300
     assert active["estimated_remaining_seconds"] == 300 + 1350
 
-    # Advance to the last step: no more steps after it, so estimate is just that step's flat share
+    # Clear the timer, then advance to the last step: no steps after it, so the
+    # estimate is just that step's flat share.
+    client.delete(f"/sessions/{session['id']}/timer")
     client.post(f"/sessions/{session['id']}/step", json={"step_index": 1})
     active = client.get("/sessions/active").json()
     assert active["estimated_remaining_seconds"] == 1350

@@ -481,6 +481,51 @@ describe('CookingMode', () => {
     vi.unstubAllGlobals()
   })
 
+  it('snaps the view back to the timer step when the timer finishes', async () => {
+    stubWakeLock()
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T12:00:00.000Z'))
+    api.getSession.mockResolvedValue({
+      id: 5, current_step: 1, finished_at: null, is_stale: false,
+      timer_seconds: 60, timer_started_at: new Date(Date.now() - 5000).toISOString(),
+    })
+    await act(async () => { renderCookingMode() })
+    expect(screen.getByText('Stap 2 van 2')).toBeInTheDocument()
+
+    // Peek back at step 1 while the timer counts down.
+    await act(async () => { fireEvent.click(screen.getByText('Vorige')) })
+    expect(screen.getByText('Stap 1 van 2')).toBeInTheDocument()
+
+    // Let the timer run out — the view returns to the step it was timing.
+    await act(async () => { vi.advanceTimersByTime(60000) })
+    expect(screen.getByText('Stap 2 van 2')).toBeInTheDocument()
+
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('previews other steps without stopping a running timer or advancing', async () => {
+    stubWakeLock()
+    const user = userEvent.setup()
+    renderCookingMode()
+    await screen.findByText('Stap 1 van 2')
+
+    await user.click(screen.getByText('Volgende'))
+    await screen.findByText('Stap 2 van 2')
+    await user.click(screen.getByText('Start timer (20 min)'))
+    await screen.findByText(/^\d+:\d{2}$/)
+    api.advanceStep.mockClear()
+
+    // Peek back at step 1 — local only, no API call, timer stays put.
+    await user.click(screen.getByText('Vorige'))
+    expect(await screen.findByText('Stap 1 van 2')).toBeInTheDocument()
+    expect(api.advanceStep).not.toHaveBeenCalled()
+    expect(screen.getByText(/timer loopt nog voor stap 2/i)).toBeInTheDocument()
+    expect(screen.getByText(/^\d+:\d{2}$/)).toBeInTheDocument()
+
+    vi.unstubAllGlobals()
+  })
+
   it('does not show the quit-cooking button on the finish/photo phase', async () => {
     stubWakeLock()
     const user = userEvent.setup()

@@ -53,6 +53,7 @@ export function CookingMode() {
   const [stepIndex, setStepIndex] = useState(0)
   const [phase, setPhase] = useState('steps') // 'steps' | 'finish'
   const [timerEndAt, setTimerEndAt] = useState(null)
+  const [timerStepIndex, setTimerStepIndex] = useState(null) // which main step the running timer belongs to
   const [remaining, setRemaining] = useState(0)
   const [timerDone, setTimerDone] = useState(false)
   const [showStaleDialog, setShowStaleDialog] = useState(false)
@@ -69,6 +70,11 @@ export function CookingMode() {
 
   const mainSteps = (recipe?.steps || []).filter(s => s.track !== 'meanwhile')
   const meanwhileSteps = (recipe?.steps || []).filter(s => s.track === 'meanwhile')
+
+  // A timer that's still counting down. While one is running, stepping through
+  // the recipe is a preview — it must not stop the timer or record step times.
+  const timerRunning = timerEndAt != null && remaining > 0
+  const peeking = timerRunning && timerStepIndex != null && timerStepIndex !== stepIndex
 
   function applyEstimate(session) {
     const mid = session?.estimated_remaining_seconds
@@ -92,6 +98,7 @@ export function CookingMode() {
       setTimerEndAt(Date.now() + remainingMs)
       setRemaining(Math.round(remainingMs / 1000))
       setTimerDone(false)
+      setTimerStepIndex(session.current_step ?? 0)
     } else {
       // Timer fully elapsed while we were away — clear it rather than show a
       // stuck "done" state for however long ago it actually finished.
@@ -248,13 +255,18 @@ export function CookingMode() {
         clearInterval(interval)
         navigator.vibrate?.(500)
         playAlarm()
+        // If the cook wandered off to preview other steps while waiting, bring
+        // them back to the step whose timer just finished so "Volgende" moves
+        // on from the right place.
+        if (timerStepIndex != null) setStepIndex(timerStepIndex)
       }
     }, 250)
     return () => clearInterval(interval)
-  }, [timerEndAt])
+  }, [timerEndAt, timerStepIndex])
 
   function resetLocalTimer() {
     setTimerEndAt(null)
+    setTimerStepIndex(null)
     setRemaining(0)
     setTimerDone(false)
   }
@@ -264,6 +276,7 @@ export function CookingMode() {
     const seconds = minutes * 60
     const updated = await api.startTimer(sessionId, seconds)
     setTimerEndAt(Date.now() + seconds * 1000)
+    setTimerStepIndex(stepIndex)
     setRemaining(seconds)
     setTimerDone(false)
     setMeanwhileIndex(0)
@@ -277,6 +290,13 @@ export function CookingMode() {
   }
 
   async function goToStep(index) {
+    if (timerRunning) {
+      // Preview only — leave the timer and the tracked step alone. The real
+      // advance happens once the timer's done (see the countdown effect).
+      setStepIndex(index)
+      setMeanwhileIndex(0)
+      return
+    }
     const updated = await api.advanceStep(sessionId, index)
     setStepIndex(index)
     resetLocalTimer()
@@ -288,7 +308,7 @@ export function CookingMode() {
   async function next() {
     if (stepIndex < mainSteps.length - 1) {
       await goToStep(stepIndex + 1)
-    } else {
+    } else if (!timerRunning) {
       setPhase('finish')
     }
   }
@@ -456,6 +476,16 @@ export function CookingMode() {
       <h1 className={`text-lg font-semibold text-gray-900 ${estimate ? 'mb-1' : 'mb-6'}`}>{recipe.name}</h1>
       {estimateLine}
 
+      {peeking && (
+        <button
+          type="button"
+          onClick={() => setStepIndex(timerStepIndex)}
+          className="text-center text-xs text-amber-600 mb-2 underline"
+        >
+          Je kijkt {stepIndex > timerStepIndex ? 'vooruit' : 'terug'} — de timer loopt nog voor stap {timerStepIndex + 1}
+        </button>
+      )}
+
       <div className="flex-1 flex items-center justify-center text-center px-2">
         <p className="text-xl text-gray-800">{step.description}</p>
       </div>
@@ -471,7 +501,15 @@ export function CookingMode() {
 
       {timerEndAt && (
         <div className={`flex items-center justify-between gap-2 py-2.5 px-4 rounded-xl text-sm font-medium mb-4 ${timerDone ? 'bg-red-100 text-red-700 animate-pulse' : 'bg-amber-50 text-amber-700'}`}>
-          <span className="flex items-center gap-2"><Timer size={16} /> {formatTime(remaining)}</span>
+          <button
+            type="button"
+            onClick={() => timerStepIndex != null && setStepIndex(timerStepIndex)}
+            className="flex items-center gap-2"
+          >
+            <Timer size={16} />
+            {peeking && <span className="opacity-80">Stap {timerStepIndex + 1} ·</span>}
+            {formatTime(remaining)}
+          </button>
           <button onClick={cancelTimer}><X size={14} /></button>
         </div>
       )}
@@ -511,9 +549,12 @@ export function CookingMode() {
         </button>
         <button
           onClick={next}
-          className="flex-1 flex items-center justify-center gap-1 bg-green-600 text-white py-3 rounded-xl text-sm font-medium hover:bg-green-700 transition"
+          disabled={timerRunning && stepIndex === mainSteps.length - 1}
+          className="flex-1 flex items-center justify-center gap-1 bg-green-600 text-white py-3 rounded-xl text-sm font-medium hover:bg-green-700 disabled:opacity-40 transition"
         >
-          {stepIndex < mainSteps.length - 1 ? <>Volgende <ChevronRight size={16} /></> : 'Klaar met stappen'}
+          {stepIndex < mainSteps.length - 1
+            ? <>Volgende <ChevronRight size={16} /></>
+            : timerRunning ? 'Timer loopt nog' : 'Klaar met stappen'}
         </button>
       </div>
     </div>

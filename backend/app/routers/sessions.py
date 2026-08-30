@@ -53,6 +53,13 @@ def _parse_aware(value: str) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def _timer_is_live(row: dict, now: datetime) -> bool:
+    """A timer that's been started and hasn't counted down to zero yet."""
+    if row["timer_seconds"] is None or row["timer_started_at"] is None:
+        return False
+    return _parse_aware(row["timer_started_at"]) + timedelta(seconds=row["timer_seconds"]) > now
+
+
 def _is_stale(row: dict, now: datetime) -> bool:
     if row["finished_at"] is not None:
         return False
@@ -352,10 +359,28 @@ def advance_step(session_id: int, body: StepAdvanceIn, conn: Connection = Depend
         raise HTTPException(400, "step_index out of range")
 
     current_time = datetime.now(timezone.utc)
+
+    # A timer is still counting down on the current step — the cook is looking
+    # ahead or back while they wait, not moving on. Don't stop the timer, don't
+    # move the tracked step, don't record a (partial) step time. The real
+    # advance happens once the timer's done and this is called again.
+    if _timer_is_live(session, current_time):
+        conn.execute(
+            "UPDATE cook_sessions SET last_activity_at=? WHERE id=?",
+            (current_time.isoformat(), session_id)
+        )
+        conn.commit()
+        return _fetch_session(conn, session_id)
+
     if session["step_started_at"] and 0 <= session["current_step"] < total_steps:
         left_step = main_steps[session["current_step"]]
-        elapsed = (current_time - _parse_aware(session["step_started_at"])).total_seconds()
-        _log_step_time(conn, session["recipe_id"], "main", left_step["sort_order"], session_id, round(elapsed))
+        # A wait step's elapsed time only means something once its timer has
+        # actually run — without one it's just "time until the cook clicked
+        # past", which is noise. (A live timer already returned above.)
+        timer_ran = session["timer_seconds"] is not None
+        if not left_step["wait_time_minutes"] or timer_ran:
+            elapsed = (current_time - _parse_aware(session["step_started_at"])).total_seconds()
+            _log_step_time(conn, session["recipe_id"], "main", left_step["sort_order"], session_id, round(elapsed))
 
     now = current_time.isoformat()
     conn.execute(
@@ -439,14 +464,18 @@ MIN_ACTIVE_SECONDS = 60
 def finish_cooking(session_id: int, conn: Connection = Depends(get_db)):
     session = _fetch_session(conn, session_id)
     first_finish = session["finished_at"] is None
-    if first_finish and session["cooking_mode"] and session["step_started_at"]:
+    now_dt = datetime.now(timezone.utc)
+    if first_finish and session["cooking_mode"] and session["step_started_at"] and not _timer_is_live(session, now_dt):
         main_steps = _main_step_rows(conn, session["recipe_id"])
         if 0 <= session["current_step"] < len(main_steps):
-            elapsed = (datetime.now(timezone.utc) - _parse_aware(session["step_started_at"])).total_seconds()
-            _log_step_time(
-                conn, session["recipe_id"], "main", main_steps[session["current_step"]]["sort_order"],
-                session_id, round(elapsed)
-            )
+            leaving = main_steps[session["current_step"]]
+            timer_ran = session["timer_seconds"] is not None
+            if not leaving["wait_time_minutes"] or timer_ran:
+                elapsed = (now_dt - _parse_aware(session["step_started_at"])).total_seconds()
+                _log_step_time(
+                    conn, session["recipe_id"], "main", leaving["sort_order"],
+                    session_id, round(elapsed)
+                )
     if first_finish:
         # Whole-cook wall-clock duration — a recipe-level signal that survives
         # step edits, unlike the per-step step_durations history. Skipped for
