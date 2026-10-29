@@ -57,6 +57,7 @@ export default defineConfig({
   preview: {
     port: 3001,
     host: true,
+    allowedHosts: ['recept.rubricmaker.party'],
     proxy: {
       '/api': {
         target: 'http://localhost:8001',
