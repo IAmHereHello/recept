@@ -7,6 +7,7 @@ import { PersistentTimerBar } from './components/PersistentTimerBar'
 import { Home } from './pages/Home'
 import { RecipeList } from './pages/RecipeList'
 import { RecipeDetail } from './pages/RecipeDetail'
+import { RecipePrint } from './pages/RecipePrint'
 import { RecipeForm } from './pages/RecipeForm'
 import { CookingMode } from './pages/CookingMode'
 import { Planner } from './pages/Planner'
@@ -23,6 +24,7 @@ export default function App() {
         <Route path="/recipes/:id" element={<RecipeDetail />} />
         <Route path="/recipes/:id/edit" element={<RecipeForm />} />
         <Route path="/recipes/:id/cook" element={<CookingMode />} />
+        <Route path="/recipes/:id/print" element={<RecipePrint />} />
         <Route path="/plan" element={<Planner />} />
         <Route path="/vriezer" element={<Vriezer />} />
         <Route path="/settings" element={<Settings />} />

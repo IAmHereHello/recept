@@ -31,3 +31,186 @@ body {
 .safe-bottom {
   padding-bottom: env(safe-area-inset-bottom);
 }
+
+/* ---- Recipe print sheet (see components/RecipePrintSheet.jsx) ---- */
+
+.print-sheet {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 14mm 15mm;
+  }
+
+  html, body {
+    background: #fff !important;
+    overflow: visible !important;
+  }
+
+  body > *:not(.print-sheet) {
+    display: none !important;
+  }
+
+  .print-sheet {
+    display: block;
+    color: #111;
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size: 11pt;
+    line-height: 1.45;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .ps-header {
+    display: flex;
+    gap: 8mm;
+    align-items: flex-start;
+    justify-content: space-between;
+    border-bottom: 2px solid #15803d;
+    padding-bottom: 5mm;
+    margin-bottom: 6mm;
+  }
+  .ps-title {
+    font-size: 24pt;
+    line-height: 1.15;
+    font-weight: 700;
+    margin: 0 0 2mm;
+  }
+  .ps-meta {
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 9.5pt;
+    color: #444;
+    margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .ps-description {
+    margin: 3mm 0 0;
+    font-style: italic;
+    color: #333;
+  }
+  .ps-photo {
+    width: 42mm;
+    height: 32mm;
+    object-fit: cover;
+    border-radius: 2mm;
+    flex-shrink: 0;
+  }
+
+  .ps-heading {
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 10pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #15803d;
+    margin: 0 0 3mm;
+  }
+
+  .ps-body {
+    display: grid;
+    grid-template-columns: 58mm 1fr;
+    gap: 9mm;
+  }
+
+  .ps-ingredients {
+    background: #f3f7f4;
+    border-radius: 2mm;
+    padding: 4mm;
+    align-self: start;
+    break-inside: avoid;
+  }
+  .ps-ingredients ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .ps-ingredients li {
+    display: flex;
+    gap: 2.5mm;
+    align-items: flex-start;
+    font-size: 10.5pt;
+    margin-bottom: 1.6mm;
+    break-inside: avoid;
+  }
+  .ps-box {
+    width: 3mm;
+    height: 3mm;
+    border: 1px solid #555;
+    border-radius: 0.5mm;
+    flex-shrink: 0;
+    margin-top: 1.2mm;
+  }
+
+  .ps-steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .ps-steps li {
+    display: flex;
+    gap: 3mm;
+    margin-bottom: 3.5mm;
+    break-inside: avoid;
+  }
+  .ps-steps p {
+    margin: 0;
+  }
+  .ps-num {
+    font-family: system-ui, -apple-system, sans-serif;
+    font-weight: 700;
+    font-size: 10pt;
+    color: #fff;
+    background: #15803d;
+    width: 6mm;
+    height: 6mm;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .ps-wait {
+    color: #92400e;
+    font-size: 10pt;
+  }
+
+  .ps-meanwhile {
+    margin-top: 5mm;
+    border-left: 3px solid #0ea5e9;
+    padding-left: 4mm;
+    break-inside: avoid;
+  }
+  .ps-meanwhile ul {
+    list-style: disc;
+    margin: 0;
+    padding-left: 4mm;
+  }
+  .ps-meanwhile li {
+    margin-bottom: 1.5mm;
+  }
+
+  .ps-notes {
+    margin-top: 8mm;
+    break-inside: avoid;
+  }
+  .ps-lines {
+    height: 24mm;
+    background-image: repeating-linear-gradient(
+      to bottom, transparent 0, transparent 7.5mm, #bbb 7.5mm, #bbb 8mm
+    );
+  }
+
+  .ps-footer {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 6mm;
+    padding-top: 2mm;
+    border-top: 1px solid #ccc;
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 8pt;
+    color: #777;
+  }
+}

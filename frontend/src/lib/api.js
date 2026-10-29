@@ -35,6 +35,8 @@ export const api = {
     return req('POST', '/recipes/image', fd, true)
   },
   recipeImageFromUrl: (url) => req('POST', '/recipes/image-from-url', { url }),
+  getPrintStatus: () => req('GET', '/print/status'),
+  printRecipe: (id) => req('POST', `/recipes/${id}/print`),
 
   // Cook sessions
   getSessions: (recipeId) => req('GET', `/sessions/recipe/${recipeId}`),

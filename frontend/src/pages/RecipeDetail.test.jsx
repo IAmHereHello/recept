@@ -21,6 +21,8 @@ vi.mock('../lib/api', () => ({
     healthReview: vi.fn(),
     logMeal: vi.fn(),
     setDay: vi.fn(),
+    getPrintStatus: vi.fn(),
+    printRecipe: vi.fn(),
   },
 }))
 
@@ -363,5 +365,50 @@ describe('RecipeDetail retroactive meal log', () => {
     await user.click(screen.getByText('Vervangen'))
     expect(api.setDay).toHaveBeenCalledWith('2026-08-17', 'thu',
       expect.objectContaining({ recipe_id: 1 }))
+  })
+})
+
+describe('RecipeDetail print button', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    api.getRecipe.mockResolvedValue(RECIPE)
+    api.getSessions.mockResolvedValue([])
+    window.print = vi.fn()
+  })
+
+  it('prints directly on the Pi when a printer is set up, without a browser dialog', async () => {
+    api.getPrintStatus.mockResolvedValue({ enabled: true, printer: 'recept-printer' })
+    api.printRecipe.mockResolvedValue({ ok: true })
+    renderDetail()
+    await userEvent.click(await screen.findByRole('button', { name: 'Afdrukken' }))
+    expect(await screen.findByText(/Naar de printer gestuurd/)).toBeInTheDocument()
+    expect(api.printRecipe).toHaveBeenCalledWith('1')
+    expect(window.print).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the browser dialog with the recipe name as title when no printer is set up', async () => {
+    api.getPrintStatus.mockResolvedValue({ enabled: false, printer: null })
+    let titleDuringPrint
+    window.print = vi.fn(() => { titleDuringPrint = document.title })
+    document.title = 'ReceptApp'
+    renderDetail()
+    await userEvent.click(await screen.findByRole('button', { name: 'Afdrukken' }))
+    await vi.waitFor(() => expect(window.print).toHaveBeenCalledOnce())
+    expect(titleDuringPrint).toBe('Pasta')
+    expect(screen.getByTestId('print-sheet')).toBeInTheDocument()
+    window.dispatchEvent(new Event('afterprint'))
+    await vi.waitFor(() => expect(screen.queryByTestId('print-sheet')).not.toBeInTheDocument())
+    expect(document.title).toBe('ReceptApp')
+    expect(api.printRecipe).not.toHaveBeenCalled()
+  })
+
+  it('shows the Pi error and offers the browser dialog instead', async () => {
+    api.getPrintStatus.mockResolvedValue({ enabled: true, printer: 'recept-printer' })
+    api.printRecipe.mockRejectedValue(new Error('De printer gaf een fout.'))
+    renderDetail()
+    await userEvent.click(await screen.findByRole('button', { name: 'Afdrukken' }))
+    expect(await screen.findByText('De printer gaf een fout.')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Via browser afdrukken' }))
+    await vi.waitFor(() => expect(window.print).toHaveBeenCalledOnce())
   })
 })
