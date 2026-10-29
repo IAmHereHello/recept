@@ -199,26 +199,57 @@ export function Planner() {
     setGrocery(data)
   }
 
-  async function shareGrocery() {
-    const text = Object.entries(grocery.by_recipe)
-      .map(([name, ings]) => `${name}:\n${ings.map(i => `  - ${i.amount || ''} ${i.unit || ''} ${i.name}`.trim()).join('\n')}`)
-      .join('\n\n')
-    try {
-      if (navigator.share) {
-        await navigator.share({ text })
-        setShareStatus('Gedeeld')
-      } else if (navigator.clipboard) {
+  function groceryText() {
+    return 'Boodschappen\n' + grocery.items
+      .map(i => `- ${i.quantity ? `${i.quantity} ` : ''}${i.name}`)
+      .join('\n')
+  }
+
+  function flashShareStatus(msg) {
+    setShareStatus(msg)
+    setTimeout(() => setShareStatus(''), 2500)
+  }
+
+  // navigator.clipboard only exists on https/localhost. The Pi serves plain
+  // http on the home network, so fall back to the old execCommand trick.
+  async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
         await navigator.clipboard.writeText(text)
-        setShareStatus('Gekopieerd naar klembord')
-      } else {
-        setShareStatus('Delen niet ondersteund op dit apparaat')
-      }
+        return true
+      } catch { /* fall through to execCommand */ }
+    }
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    let ok = false
+    try { ok = document.execCommand('copy') } catch { ok = false }
+    document.body.removeChild(ta)
+    return ok
+  }
+
+  async function copyGrocery() {
+    const ok = await copyText(groceryText())
+    flashShareStatus(ok ? 'Gekopieerd naar klembord' : 'Kopiëren mislukt')
+  }
+
+  async function shareGrocery() {
+    const text = groceryText()
+    if (!navigator.share) {
+      // No share sheet (http, or desktop browser): copying is the next best thing.
+      const ok = await copyText(text)
+      flashShareStatus(ok ? 'Gekopieerd naar klembord' : 'Delen niet ondersteund op dit apparaat')
+      return
+    }
+    try {
+      await navigator.share({ text })
+      flashShareStatus('Gedeeld')
     } catch (err) {
-      if (err.name !== 'AbortError') {
-        setShareStatus('Delen mislukt')
-      }
-    } finally {
-      setTimeout(() => setShareStatus(''), 2500)
+      if (err.name !== 'AbortError') flashShareStatus('Delen mislukt')
     }
   }
 
@@ -498,6 +529,12 @@ export function Planner() {
               <h3 className="font-semibold text-gray-900">Boodschappenlijst</h3>
               <div className="flex gap-2">
                 <button
+                  onClick={copyGrocery}
+                  className="text-sm text-green-600 font-medium"
+                >
+                  Kopieer
+                </button>
+                <button
                   onClick={shareGrocery}
                   className="text-sm text-green-600 font-medium"
                 >
@@ -512,20 +549,24 @@ export function Planner() {
               </div>
             )}
             <div className="overflow-y-auto flex-1">
-              {Object.entries(grocery.by_recipe).map(([recipeName, ings]) => (
-                <div key={recipeName} className="mb-4">
-                  <h4 className="text-sm font-semibold text-gray-700 mb-2">{recipeName}</h4>
-                  <ul className="space-y-1">
-                    {ings.map((ing, i) => (
-                      <li key={i} className="flex items-center gap-2 text-sm text-gray-600">
-                        <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
-                        {ing.amount && <span className="font-medium">{ing.amount} {ing.unit}</span>}
-                        <span>{ing.name}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
+              {grocery.items.length === 0 ? (
+                <p className="text-sm text-gray-500">Geen boodschappen voor de rest van deze week.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {grocery.items.map(item => (
+                    <li key={item.name} className="flex items-start gap-2 text-sm text-gray-700">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0 mt-1.5" />
+                      <div>
+                        <div>
+                          {item.quantity && <span className="font-medium">{item.quantity} </span>}
+                          <span>{item.name}</span>
+                        </div>
+                        <div className="text-xs text-gray-400">{item.recipes.join(', ')}</div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
         </div>

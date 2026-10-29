@@ -50,8 +50,11 @@ describe('Planner grocery share button', () => {
     api.getGroceries.mockResolvedValue({
       week_start: '2026-01-05',
       by_recipe: { Soup: [{ name: 'Tomato', amount: '2', unit: '' }] },
+      items: [{ name: 'Tomato', quantity: '2', recipes: ['Soup'] }],
     })
     stubNavigator()
+    vi.stubGlobal('isSecureContext', true)
+    document.execCommand = vi.fn().mockReturnValue(false)
   })
 
   afterEach(() => {
@@ -111,6 +114,50 @@ describe('Planner grocery share button', () => {
 
     expect(await screen.findByText('Gekopieerd naar klembord')).toBeInTheDocument()
     expect(writeText).toHaveBeenCalled()
+  })
+
+  it('falls back to execCommand copy on plain http, where navigator.clipboard is missing', async () => {
+    const user = userEvent.setup()
+    stubNavigator()
+    vi.stubGlobal('isSecureContext', false)
+    document.execCommand = vi.fn().mockReturnValue(true)
+    renderPlanner()
+    await openGroceryModal(user)
+
+    await user.click(screen.getByRole('button', { name: 'Deel' }))
+
+    expect(await screen.findByText('Gekopieerd naar klembord')).toBeInTheDocument()
+    expect(document.execCommand).toHaveBeenCalledWith('copy')
+  })
+
+  it('copies the combined list with the Kopieer button even when share is available', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const share = vi.fn()
+    stubNavigator({ share, clipboard: { writeText } })
+    renderPlanner()
+    await openGroceryModal(user)
+
+    await user.click(screen.getByRole('button', { name: 'Kopieer' }))
+
+    expect(await screen.findByText('Gekopieerd naar klembord')).toBeInTheDocument()
+    expect(writeText).toHaveBeenCalledWith('Boodschappen\n- 2 Tomato')
+    expect(share).not.toHaveBeenCalled()
+  })
+
+  it('shows each combined ingredient once with the recipes it is for', async () => {
+    const user = userEvent.setup()
+    api.getGroceries.mockResolvedValue({
+      week_start: '2026-01-05',
+      by_recipe: {},
+      items: [{ name: 'Gehakt', quantity: '1,25 kg', recipes: ['Chili', 'Lasagne'] }],
+    })
+    renderPlanner()
+    await openGroceryModal(user)
+
+    expect(screen.getByText('Gehakt')).toBeInTheDocument()
+    expect(screen.getByText('1,25 kg')).toBeInTheDocument()
+    expect(screen.getByText('Chili, Lasagne')).toBeInTheDocument()
   })
 
   it('shows an unsupported message when neither API is available', async () => {
