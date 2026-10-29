@@ -393,3 +393,38 @@ def test_grocery_list_side_dish_excluded_on_past_day(client, monkeypatch):
 
     resp = client.post("/plan/grocery", json={"week_start": week_start})
     assert "Focaccia" not in resp.json()["by_recipe"]
+
+
+def test_grocery_list_combines_same_ingredient_across_recipes(client, monkeypatch):
+    _freeze_today(monkeypatch, "2026-01-05")
+    week_start = "2026-01-05"
+    a = make_recipe(client, name="Chili", ingredients=[
+        {"name": "Ui", "amount": "1", "unit": "", "sort_order": 0},
+        {"name": "Gehakt", "amount": "500", "unit": "g", "sort_order": 1},
+    ])
+    b = make_recipe(client, name="Lasagne", ingredients=[
+        {"name": "ui ", "amount": "2", "unit": "stuks", "sort_order": 0},
+        {"name": "gehakt", "amount": "0,75", "unit": "kg", "sort_order": 1},
+        {"name": "Zout", "amount": None, "unit": "snufje", "sort_order": 2},
+    ])
+    client.put(f"/plan/{week_start}/mon", json={"week_start": week_start, "day": "mon", "recipe_id": a["id"], "locked": False})
+    client.put(f"/plan/{week_start}/tue", json={"week_start": week_start, "day": "tue", "recipe_id": b["id"], "locked": False})
+
+    items = client.post("/plan/grocery", json={"week_start": week_start}).json()["items"]
+    by_name = {i["name"].lower(): i for i in items}
+    assert by_name["ui"]["quantity"] == "3"
+    assert by_name["gehakt"]["quantity"] == "1,25 kg"
+    assert by_name["gehakt"]["recipes"] == ["Chili", "Lasagne"]
+    assert by_name["zout"]["quantity"] == "snufje"
+    assert len(items) == 3
+
+
+def test_grocery_list_counts_a_recipe_planned_twice(client, monkeypatch):
+    _freeze_today(monkeypatch, "2026-01-05")
+    week_start = "2026-01-05"
+    recipe = make_recipe(client)
+    for day in ("mon", "thu"):
+        client.put(f"/plan/{week_start}/{day}", json={"week_start": week_start, "day": day, "recipe_id": recipe["id"], "locked": False})
+
+    items = client.post("/plan/grocery", json={"week_start": week_start}).json()["items"]
+    assert {i["name"]: i["quantity"] for i in items} == {"Minced meat": "800 g", "Pasta": "1 kg"}

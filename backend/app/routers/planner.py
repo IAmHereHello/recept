@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from typing import Optional
 from app.database import get_db
 from app.health import grade as health_grade
+from app.grocery import combine as combine_groceries
 from app.models import MealPlanEntry, GroceryRequest, SideDishIn, SuggestIn
 
 router = APIRouter(prefix="/plan", tags=["planner"])
@@ -355,14 +356,16 @@ def grocery_list(body: GroceryRequest, conn: Connection = Depends(get_db)):
     side_rows = [row for row in side_rows if _day_date(ws, row["day"]) >= today]
 
     grocery: dict[str, list] = {}  # recipe_name -> ingredients
+    meals: list[tuple[str, list[dict]]] = []  # one entry per planned meal
     for row in [*plan_rows, *side_rows]:
         recipe = conn.execute("SELECT name FROM recipes WHERE id = ?", (row["recipe_id"],)).fetchone()
         if not recipe:
             continue
-        ingredients = conn.execute(
+        ingredients = [dict(i) for i in conn.execute(
             "SELECT name, amount, unit FROM ingredients WHERE recipe_id = ? ORDER BY sort_order",
             (row["recipe_id"],)
-        ).fetchall()
-        grocery[recipe["name"]] = [dict(i) for i in ingredients]
+        ).fetchall()]
+        grocery[recipe["name"]] = ingredients
+        meals.append((recipe["name"], ingredients))
 
-    return {"week_start": ws, "by_recipe": grocery}
+    return {"week_start": ws, "by_recipe": grocery, "items": combine_groceries(meals)}
