@@ -133,6 +133,36 @@ chmod +x "$SCRIPTS_DIR/update.sh"
 
 info "Desktop shortcut created: $DESKTOP_FILE"
 
+# ── Nightly auto-update timer ────────────────────────────────────────────────
+info "Writing systemd timer: receptapp-update"
+cat > "$SERVICE_DIR/receptapp-update.service" <<EOF
+[Unit]
+Description=ReceptApp nightly update
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$SCRIPTS_DIR/update.sh
+EOF
+
+cat > "$SERVICE_DIR/receptapp-update.timer" <<EOF
+[Unit]
+Description=Run ReceptApp update nightly
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now receptapp-update.timer
+info "Nightly auto-update scheduled (~03:30, see: systemctl --user list-timers)"
+
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -146,5 +176,6 @@ echo "    systemctl --user status receptapp-backend"
 echo "    systemctl --user status receptapp-frontend"
 echo ""
 echo "  Update button added to desktop."
+echo "  Nightly auto-update: ~03:30 (receptapp-update.timer)."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
