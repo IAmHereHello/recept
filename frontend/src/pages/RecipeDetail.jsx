@@ -6,9 +6,10 @@ import { StarRating } from '../components/StarRating'
 import { Badge } from '../components/Badge'
 import { HealthBadge, HealthScale } from '../components/HealthBadge'
 import { PlanConflictDialog } from '../components/PlanConflictDialog'
+import { RecipePrintSheet } from '../components/RecipePrintSheet'
 import { recipeTimeEstimate } from '../lib/recipeTime'
 import {
-  Clock, ChefHat, Pencil, Trash2, Play, X, Users, Search, ChevronDown, Leaf, Loader2, CalendarPlus
+  Clock, ChefHat, Pencil, Trash2, Play, X, Users, Search, ChevronDown, Leaf, Loader2, CalendarPlus, Printer
 } from 'lucide-react'
 
 const todayISO = () => new Date().toLocaleDateString('sv-SE') // YYYY-MM-DD, local
@@ -36,6 +37,9 @@ export function RecipeDetail() {
   const [logging, setLogging] = useState(false)
   const [logError, setLogError] = useState('')
   const [planConflict, setPlanConflict] = useState(null)
+  const [printing, setPrinting] = useState(false)
+  const [browserPrinting, setBrowserPrinting] = useState(false)
+  const [printMsg, setPrintMsg] = useState(null) // { ok: bool, text }
   const me = getUser()
 
   const load = useCallback(() => Promise.all([
@@ -44,6 +48,19 @@ export function RecipeDetail() {
   ]).finally(() => setLoading(false)), [id])
 
   useEffect(() => { load() }, [load])
+
+  // The print sheet is only mounted while printing; once it's in the DOM,
+  // open the browser dialog. The browser uses document.title as the print
+  // header / PDF filename.
+  useEffect(() => {
+    if (!browserPrinting) return
+    const prevTitle = document.title
+    const done = () => { document.title = prevTitle; setBrowserPrinting(false) }
+    window.addEventListener('afterprint', done, { once: true })
+    document.title = recipe.name
+    window.print()
+    return () => window.removeEventListener('afterprint', done)
+  }, [browserPrinting, recipe])
 
   async function startCooking() {
     const session = await api.createSession({ recipe_id: Number(id), cooked_by: me, cooking_mode: true })
@@ -128,6 +145,26 @@ export function RecipeDetail() {
     }
   }
 
+  // One tap: if the Pi has a printer set up it prints directly (no dialog),
+  // otherwise fall back to the browser's print dialog.
+  async function printRecipe() {
+    setPrintMsg(null)
+    setPrinting(true)
+    try {
+      const status = await api.getPrintStatus().catch(() => ({ enabled: false }))
+      if (!status.enabled) {
+        setBrowserPrinting(true)
+        return
+      }
+      await api.printRecipe(id)
+      setPrintMsg({ ok: true, text: 'Naar de printer gestuurd. Staat hij uit, dan wordt het geprint zodra hij aangaat.' })
+    } catch (e) {
+      setPrintMsg({ ok: false, text: e.message })
+    } finally {
+      setPrinting(false)
+    }
+  }
+
   async function runHealthReview() {
     setHealthReviewing(true)
     setHealthError('')
@@ -168,6 +205,11 @@ export function RecipeDetail() {
         <div className="flex items-start justify-between gap-3 mb-3">
           <h1 className="text-2xl font-bold text-gray-900">{recipe.name}</h1>
           <div className="flex gap-2 shrink-0">
+            <button onClick={printRecipe} disabled={printing} aria-label="Afdrukken" className="p-2 rounded-lg bg-gray-100 hover:bg-gray-200 disabled:opacity-50 transition">
+              {printing
+                ? <Loader2 size={16} className="text-gray-600 animate-spin" />
+                : <Printer size={16} className="text-gray-600" />}
+            </button>
             <Link to={`/recipes/${id}/edit`} className="p-2 rounded-lg bg-gray-100 hover:bg-gray-200 transition">
               <Pencil size={16} className="text-gray-600" />
             </Link>
@@ -176,6 +218,19 @@ export function RecipeDetail() {
             </button>
           </div>
         </div>
+
+        {printMsg && (
+          <div className={`text-xs rounded-lg p-2 mb-3 border flex items-center justify-between gap-2 ${
+            printMsg.ok ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'
+          }`}>
+            <span>{printMsg.text}</span>
+            {printMsg.ok
+              ? <button onClick={() => setPrintMsg(null)} aria-label="Sluiten"><X size={14} /></button>
+              : <button onClick={() => { setPrintMsg(null); setBrowserPrinting(true) }} className="font-medium underline shrink-0">
+                  Via browser afdrukken
+                </button>}
+          </div>
+        )}
 
         <div className="flex flex-wrap gap-2 mb-4">
           {recipe.is_vegan && <Badge color="emerald">Vegan</Badge>}
@@ -487,6 +542,8 @@ export function RecipeDetail() {
         conflict={planConflict}
         onClose={() => { setPlanConflict(null); load() }}
       />
+
+      {browserPrinting && <RecipePrintSheet recipe={recipe} timeEst={timeEst} />}
     </div>
   )
 }
